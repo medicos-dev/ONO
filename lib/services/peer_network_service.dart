@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:peerdart/peerdart.dart';
 import 'message_types.dart';
 
@@ -17,6 +18,9 @@ class PeerNetworkService {
   String? _playerId;
   String? _playerName;
   int _sequenceNumber = 0;
+  
+  // Voice support
+  bool _isVoiceEnabled = false;
   
   // Stream controllers (same interface as HackChatService)
   final StreamController<GameMessage> _messageController = StreamController<GameMessage>.broadcast();
@@ -43,6 +47,34 @@ class PeerNetworkService {
   
   /// Current player ID
   String? get playerId => _playerId;
+  
+  /// Whether voice chat is enabled
+  bool get isVoiceEnabled => _isVoiceEnabled;
+  
+  /// Toggle voice chat (stub for future implementation)
+  Future<void> toggleVoice(bool enable) async {
+    _isVoiceEnabled = enable;
+    debugPrint('P2P: Voice chat toggled to $enable');
+    // Future: Initialize local media stream requesting audio: true
+  }
+  
+  /// Warm up the Render server to prevent cold-start delays
+  Future<void> _warmUpServer() async {
+    final url = Uri.parse('https://ono-x1v9.onrender.com/');
+    debugPrint('P2P: Warming up server at $url...');
+    
+    // Fire and forget 3 pings with delay
+    for (int i = 0; i < 3; i++) {
+      try {
+        // Simple GET request to trigger load balancer
+        await http.get(url).timeout(const Duration(seconds: 2));
+        debugPrint('P2P: Wake-up ping ${i+1} sent');
+      } catch (_) {
+        // Ignore errors, we just want to hit the endpoint
+      }
+      if (i < 2) await Future.delayed(const Duration(seconds: 1));
+    }
+  }
 
   /// Connect to a room (creates as HOST or joins as CLIENT)
   Future<bool> connect({
@@ -53,6 +85,12 @@ class PeerNetworkService {
   }) async {
     try {
       await disconnect();
+      
+      // Start server warm-up (fire and forget to not block UI, but we await briefly if needed)
+      // Actually, we should await it partially or run it in parallel if we want speed.
+      // But user requested: "In the connect method... add a Warm-up phase"
+      // Since Render can take 30s, we shouldn't block the WHOLE time, but the pings are fast.
+      await _warmUpServer();
       
       // Wait briefly for PeerJS server to release the old ID
       await Future.delayed(const Duration(milliseconds: 500));
@@ -86,7 +124,7 @@ class PeerNetworkService {
       id: peerId,
       options: PeerOptions(
         debug: LogLevel.All,
-        host: '0.peerjs.com',
+        host: 'ono-x1v9.onrender.com',
         port: 443,
         secure: true,
         path: '/',
@@ -154,7 +192,7 @@ class PeerNetworkService {
     _peer = Peer(
       options: PeerOptions(
         debug: LogLevel.All,
-        host: '0.peerjs.com',
+        host: 'ono-x1v9.onrender.com',
         port: 443,
         secure: true,
         path: '/',
