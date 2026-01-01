@@ -6,12 +6,13 @@ import '../models/uno_card.dart';
 import '../models/player.dart';
 import '../models/game_state.dart';
 import '../logic/game_logic.dart';
-import '../services/peer_network_service.dart';
+import '../services/ably_game_service.dart';
 import '../services/message_types.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// Main game state provider handling both Host and Client logic
 class GameProvider extends ChangeNotifier {
-  final PeerNetworkService _networkService = PeerNetworkService();
+  final AblyGameService _networkService = AblyGameService();
   final String _myPlayerId = const Uuid().v4();
   
   GameState? _gameState;
@@ -80,6 +81,7 @@ class GameProvider extends ChangeNotifier {
   StreamSubscription? _connectionSubscription;
   StreamSubscription? _errorSubscription;
   Timer? _syncTimer;
+  StreamSubscription? _presenceSubscription;
 
   // Getters
   GameState? get gameState => _gameState;
@@ -99,6 +101,8 @@ class GameProvider extends ChangeNotifier {
   String? get unoCallerName => _unoCallerName;
   bool get canCallUno => myPlayer?.hasUno == true && !_hasCalledUno;
   bool get isPreparingGame => _isPreparingGame;  // For greedy navigation
+  /// True when joiner is waiting for first state from Host
+  bool get isSyncing => !_isHost && _isConnected && !_hasReceivedGameState;
   
   // Sequential sync progress getters (for Lobby UI)
   bool get hasReceivedPlayers => _hasReceivedPlayers;
@@ -153,6 +157,7 @@ class GameProvider extends ChangeNotifier {
     if (success) {
       _isConnected = true;
       _setupListeners();
+      WakelockPlus.enable(); // Keep screen on during game
       
       // Create initial lobby state
       final host = Player(
@@ -204,6 +209,7 @@ class GameProvider extends ChangeNotifier {
     if (success) {
       _isConnected = true;
       _setupListeners();
+      WakelockPlus.enable(); // Keep screen on during game
       
       // Send initial JOIN_REQUEST
       _sendJoinRequest();
@@ -257,6 +263,7 @@ class GameProvider extends ChangeNotifier {
     _messageSubscription = _networkService.messageStream.listen(_onMessage);
     _connectionSubscription = _networkService.connectionStream.listen(_onConnectionChange);
     _errorSubscription = _networkService.errorStream.listen(_onError);
+    _presenceSubscription = _networkService.presenceStream.listen(_onPresence);
   }
 
   void _startSyncTimer() {
@@ -390,6 +397,26 @@ class GameProvider extends ChangeNotifier {
         notifyListeners();
       }
     });
+  }
+
+  /// Handle Ably Presence events (join/leave)
+  void _onPresence(PresenceEvent event) {
+    debugPrint('DEBUG: Presence event: ${event.action} - ${event.clientId} (${event.playerName})');
+    
+    if (!_isHost) return; // Only host handles presence
+    
+    // When a new player enters, send them the current state (Welcome Snapshot)
+    if (event.action.toString().contains('enter') && event.clientId != _myPlayerId) {
+      debugPrint('DEBUG: Host detected new player via Presence: ${event.playerName}');
+      
+      // Delay slightly to ensure their subscription is ready
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (_gameState != null) {
+          debugPrint('DEBUG: Host sending welcome broadcast');
+          _broadcastGameState();
+        }
+      });
+    }
   }
 
   // === HOST LOGIC ===
@@ -1401,6 +1428,13 @@ class GameProvider extends ChangeNotifier {
     try {
       final stateSeq = message.payload['stateSeq'] as int? ?? 0;
       
+      // Gap Detection: If we missed messages, request full resync
+      if (_hasReceivedGameState && stateSeq > _lastStateSequence + 1) {
+        debugPrint('DEBUG: Gap detected! Expected ${_lastStateSequence + 1}, got $stateSeq. Requesting resync...');
+        _networkService.send(type: MessageType.syncRequest);
+        // Continue processing this state anyway (it's still valid)
+      }
+      
       // Only accept newer states
       if (stateSeq < _lastStateSequence) return;
       
@@ -1616,6 +1650,7 @@ class GameProvider extends ChangeNotifier {
   void leaveRoom() {
     _syncTimer?.cancel();
     _joinRetryTimer?.cancel();
+    WakelockPlus.disable(); // Allow screen to turn off
     _networkService.disconnect();
     _gameState = null;
     _isHost = false;
@@ -1643,6 +1678,7 @@ class GameProvider extends ChangeNotifier {
     _messageSubscription?.cancel();
     _connectionSubscription?.cancel();
     _errorSubscription?.cancel();
+    _presenceSubscription?.cancel();
     _networkService.dispose();
     super.dispose();
   }
