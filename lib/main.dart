@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'providers/game_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/lobby_screen.dart';
@@ -12,6 +13,15 @@ Future<void> main() async {
   
   // Load environment variables
   await dotenv.load(fileName: '.env');
+  
+  // Initialize Supabase with env variables
+  await Supabase.initialize(
+    url: dotenv.env['SUPABASE_URL'] ?? '',
+    anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',
+    realtimeClientOptions: const RealtimeClientOptions(
+      eventsPerSecond: 10,
+    ),
+  );
   
   // Lock orientation to portrait
   SystemChrome.setPreferredOrientations([

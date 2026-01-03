@@ -13,8 +13,8 @@ class Player {
     required this.name,
     List<UnoCard>? hand,
     this.isHost = false,
-  })  : id = id ?? const Uuid().v4(),
-        hand = hand ?? [];
+  }) : id = id ?? const Uuid().v4(),
+       hand = hand ?? [];
 
   /// Create a copy with optional new values
   Player copyWith({
@@ -61,13 +61,29 @@ class Player {
     };
   }
 
+  // Factory for DB Row (room_players)
+  factory Player.fromDbRow(Map<String, dynamic> row) {
+    return Player(
+      id: row['player_id'] as String,
+      name: row['player_name'] as String? ?? 'Unknown',
+      hand:
+          (row['cards'] as List?)
+              ?.map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
+              .toList() ??
+          [],
+      isHost: false, // Calculated separately
+    );
+  }
+
   factory Player.fromJson(Map<String, dynamic> json) {
     return Player(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      hand: (json['hand'] as List)
-          .map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
-          .toList(),
+      id: json['id'] as String? ?? const Uuid().v4(),
+      name: json['name'] as String? ?? 'Unknown',
+      hand:
+          (json['hand'] as List?)
+              ?.map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
+              .toList() ??
+          [],
       isHost: json['isHost'] as bool? ?? false,
     );
   }
@@ -95,11 +111,13 @@ class Player {
 
   factory Player.fromCompactJson(Map<String, dynamic> json) {
     return Player(
-      id: json['i'] as String,
-      name: json['n'] as String,
-      hand: (json['h'] as List)
-          .map((c) => UnoCard.fromCompactJson(c as Map<String, dynamic>))
-          .toList(),
+      id: json['i'] as String? ?? const Uuid().v4(),
+      name: json['n'] as String? ?? 'Unknown',
+      hand:
+          (json['h'] as List?)
+              ?.map((c) => UnoCard.fromCompactJson(c as Map<String, dynamic>))
+              .toList() ??
+          [],
       isHost: json['o'] as bool? ?? false,
     );
   }

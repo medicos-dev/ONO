@@ -87,10 +87,16 @@ class UnoCard {
 
   factory UnoCard.fromJson(Map<String, dynamic> json) {
     return UnoCard(
-      id: json['id'] as String,
-      color: UnoColor.fromJson(json['color'] as String),
-      value: json['value'] as String,
-      type: UnoCardType.fromJson(json['type'] as String),
+      id: json['id'] as String? ?? const Uuid().v4(),
+      color: UnoColor.values.firstWhere(
+        (e) => e.name == (json['color'] as String?),
+        orElse: () => UnoColor.black,
+      ),
+      value: json['value'] as String? ?? '',
+      type: UnoCardType.values.firstWhere(
+        (e) => e.name == (json['type'] as String?),
+        orElse: () => UnoCardType.number,
+      ),
     );
   }
 
@@ -113,7 +119,8 @@ class UnoCard {
   }
 
   /// Check if this is a wild card
-  bool get isWild => type == UnoCardType.wild || type == UnoCardType.wildDrawFour;
+  bool get isWild =>
+      type == UnoCardType.wild || type == UnoCardType.wildDrawFour;
 
   @override
   String toString() => 'UnoCard($color $displayName)';
@@ -121,9 +128,7 @@ class UnoCard {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is UnoCard &&
-          runtimeType == other.runtimeType &&
-          id == other.id;
+      other is UnoCard && runtimeType == other.runtimeType && id == other.id;
 
   @override
   int get hashCode => id.hashCode;
@@ -132,18 +137,18 @@ class UnoCard {
   Map<String, dynamic> toCompactJson() {
     return {
       'i': id,
-      'c': color.index,  // Use index instead of name for color
+      'c': color.index, // Use index instead of name for color
       'v': value,
-      't': type.index,   // Use index instead of name for type
+      't': type.index, // Use index instead of name for type
     };
   }
 
   factory UnoCard.fromCompactJson(Map<String, dynamic> json) {
     return UnoCard(
-      id: json['i'] as String,
-      color: UnoColor.values[json['c'] as int],
-      value: json['v'] as String,
-      type: UnoCardType.values[json['t'] as int],
+      id: json['i'] as String? ?? const Uuid().v4(),
+      color: UnoColor.values[json['c'] as int? ?? 0],
+      value: json['v'] as String? ?? '',
+      type: UnoCardType.values[json['t'] as int? ?? 0],
     );
   }
 }

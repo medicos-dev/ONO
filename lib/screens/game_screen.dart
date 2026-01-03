@@ -3,9 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/game_provider.dart';
 import '../models/uno_card.dart';
+import '../models/game_state.dart';
 import '../widgets/uno_card_widget.dart';
 import '../widgets/color_picker_dialog.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/horseshoe_history.dart';
+import '../widgets/wild_celebration.dart';
+import '../widgets/podium_screen.dart';
 
 /// Main game screen
 class GameScreen extends StatefulWidget {
@@ -17,80 +21,90 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   bool _animationShown = false;
-  
+  bool _podiumShown = false;
+
   // Multi-card selection & Animation state
   final Set<String> _selectedCardIds = {};
   bool _isSelectionMode = false;
   String? _selectedCardValue;
-  
+
   // Animation Keys
   final Map<String, GlobalKey> _cardKeys = {};
   final GlobalKey _discardPileKey = GlobalKey();
-  
+
   /// Fly cards from hand to center
   void _flyCardsToCenter(List<String> cardIds, List<UnoCard> cards) {
     if (cards.isEmpty) return;
-    
+
     final overlay = Overlay.of(context);
-    final discardBox = _discardPileKey.currentContext?.findRenderObject() as RenderBox?;
+    final discardBox =
+        _discardPileKey.currentContext?.findRenderObject() as RenderBox?;
     if (discardBox == null) return;
     final discardPos = discardBox.localToGlobal(Offset.zero);
-    
+
     // Create flight entries
     for (int i = 0; i < cards.length; i++) {
-        final card = cards[i];
-        final key = _cardKeys[card.id];
-        final box = key?.currentContext?.findRenderObject() as RenderBox?;
-        if (box == null) continue;
-        
-        final startPos = box.localToGlobal(Offset.zero);
-        
-        OverlayEntry? entry;
-        entry = OverlayEntry(
-          builder: (context) {
-             return TweenAnimationBuilder<Offset>(
-               tween: Tween(begin: startPos, end: discardPos + Offset(i * 20.0, 0)),
-               duration: const Duration(milliseconds: 600),
-               curve: Curves.easeOutBack,
-               onEnd: () {
-                 entry?.remove();
-               },
-               builder: (context, offset, child) {
-                 return Positioned(
-                   left: offset.dx,
-                   top: offset.dy,
-                   child: child!,
-                 );
-               },
-               child: UnoCardWidget(card: card, size: UnoCardSize.medium, isPlayable: false),
-             );
-          },
-        );
-        
-        // Stagger the launch
-        Future.delayed(Duration(milliseconds: i * 100), () {
-          overlay.insert(entry!);
-          HapticFeedback.mediumImpact(); // Haptic pulse per card launch
-        });
+      final card = cards[i];
+      final key = _cardKeys[card.id];
+      final box = key?.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null) continue;
+
+      final startPos = box.localToGlobal(Offset.zero);
+
+      OverlayEntry? entry;
+      entry = OverlayEntry(
+        builder: (context) {
+          return TweenAnimationBuilder<Offset>(
+            tween: Tween(
+              begin: startPos,
+              end: discardPos + Offset(i * 20.0, 0),
+            ),
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.easeOutBack,
+            onEnd: () {
+              entry?.remove();
+            },
+            builder: (context, offset, child) {
+              return Positioned(left: offset.dx, top: offset.dy, child: child!);
+            },
+            child: UnoCardWidget(
+              card: card,
+              size: UnoCardSize.medium,
+              isPlayable: false,
+            ),
+          );
+        },
+      );
+
+      // Stagger the launch
+      Future.delayed(Duration(milliseconds: i * 100), () {
+        if (!mounted) return;
+        overlay.insert(entry!);
+        HapticFeedback.mediumImpact(); // Haptic pulse per card launch
+      });
     }
   }
-  
+
   /// Check if a card can be selected (must match value of first selected card)
   bool _canSelectCard(UnoCard card, GameProvider provider) {
     // Block Wild cards from multi-selection
     if (card.isWild) return false;
-    
+
     // If no cards selected yet, any non-wild card can start selection
     if (_selectedCardIds.isEmpty) return true;
-    
+
     // Must match the value of already selected cards
     return card.value == _selectedCardValue;
   }
-  
-  void _toggleCardSelection(String cardId, UnoCard card, GameProvider provider) {
+
+  void _toggleCardSelection(
+    String cardId,
+    UnoCard card,
+    GameProvider provider,
+  ) {
     // Don't allow Wild cards in multi-selection
     if (card.isWild) return;
-    
+
     setState(() {
       if (_selectedCardIds.contains(cardId)) {
         // Deselecting
@@ -109,7 +123,7 @@ class _GameScreenState extends State<GameScreen> {
       }
     });
   }
-  
+
   void _clearSelection() {
     setState(() {
       _selectedCardIds.clear();
@@ -125,11 +139,11 @@ class _GameScreenState extends State<GameScreen> {
         // Handle winner being kicked (they won and need to leave)
         if (provider.wasKickedAsWinner) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            provider.leaveRoom();
+            provider.exitToMenu();
             Navigator.of(context).pushReplacementNamed('/lobby');
           });
         }
-        
+
         // Show winner animation
         if (provider.showWinnerAnimation && !_animationShown) {
           _animationShown = true;
@@ -137,53 +151,111 @@ class _GameScreenState extends State<GameScreen> {
             _showWinnerAnimationDialog(context, provider);
           });
         }
-        
+
         if (!provider.showWinnerAnimation) {
           _animationShown = false;
         }
-        
-        return Scaffold(
-          body: SafeArea(
-            bottom: true,
-            child: Stack(
-            children: [
-              // Main game UI
-              Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Color(0xFF0F3460),
-                      Color(0xFF1A1A2E),
-                      Color(0xFF16213E),
-                    ],
-                  ),
-                ),
-                child: SafeArea(
-                  bottom: false,
-                  child: Column(
-                    children: [
-                      _buildTopBar(context, provider),
-                      _buildOpponentsSection(provider),
-                      Expanded(
-                        child: _buildGameArea(context, provider),
-                      ),
-                      _buildMyHand(context, provider),
-                    ],
-                  ),
-                ),
+
+        // Show Wild Card Celebration
+        if (provider.showWildAnimation) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            showWildCelebration(context);
+            provider.clearWildAnimation();
+          });
+        }
+
+        // Show Podium Screen (Game Over)
+        if (provider.gameState?.phase == GamePhase.finished && !_podiumShown) {
+          _podiumShown = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder:
+                    (context) => PodiumScreen(
+                      winners: provider.gameState?.winners ?? [],
+                      onExit: () {
+                        provider.exitToMenu();
+                        Navigator.of(context).pushReplacementNamed('/lobby');
+                      },
+                      onCleanup: () async {
+                        // Host: Delete room and exit
+                        await provider.exitToMenu();
+                        if (context.mounted) {
+                          Navigator.of(context).pushReplacementNamed('/lobby');
+                        }
+                      },
+                    ),
               ),
-              
-              // UNO Call Animation Overlay
-              if (provider.showUnoCallAnimation)
-                _buildUnoCallAnimation(provider),
-            ],
+            );
+          });
+        }
+
+        // ROOM CLOSED Listener (Force Exit)
+        if (provider.error == 'ROOM_CLOSED') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              AppToast.show(
+                context,
+                'Room closed by host',
+                type: AppToastType.error,
+              );
+              provider.exitToMenu(); // Ensure disconnection
+              Navigator.of(
+                context,
+              ).pushNamedAndRemoveUntil('/', (route) => false);
+            }
+          });
+        }
+
+        // Main PopScope starts here
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (bool didPop, dynamic result) {
+            if (didPop) return;
+            AppToast.show(
+              context,
+              'Please use Exit/Resign to leave',
+              type: AppToastType.info,
+            );
+          },
+          child: Scaffold(
+            body: SafeArea(
+              bottom: true,
+              child: Stack(
+                children: [
+                  // Main game UI
+                  Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0xFF0F3460),
+                          Color(0xFF1A1A2E),
+                          Color(0xFF16213E),
+                        ],
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        _buildTopBar(context, provider),
+                        _buildOpponentsSection(provider),
+                        Expanded(child: _buildGameArea(context, provider)),
+                        _buildMyHand(context, provider),
+                      ],
+                    ),
+                  ),
+
+                  // UNO Call Animation Overlay
+                  if (provider.showUnoCallAnimation)
+                    _buildUnoCallAnimation(provider),
+                ],
+              ),
+            ),
           ),
-          ),
-        );
+        ); // Closing PopScope
       },
-    );
+    ); // Closing Consumer
   }
 
   Widget _buildUnoCallAnimation(GameProvider provider) {
@@ -212,12 +284,15 @@ class _GameScreenState extends State<GameScreen> {
                   const SizedBox(height: 16),
                   // UNO text with zoom animation
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 48,
+                      vertical: 20,
+                    ),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                         colors: [
                           Color(0xFFE53935), // Red
-                          Color(0xFFFF9800), // Orange  
+                          Color(0xFFFF9800), // Orange
                           Color(0xFFFDD835), // Yellow
                           Color(0xFF43A047), // Green
                           Color(0xFF1E88E5), // Blue
@@ -241,20 +316,29 @@ class _GameScreenState extends State<GameScreen> {
                         letterSpacing: 8,
                         shadows: [
                           Shadow(
-                            color: Colors.black54,
-                            offset: Offset(3, 3),
-                            blurRadius: 6,
+                            blurRadius: 15,
+                            color: Colors.black45,
+                            offset: Offset(0, 4),
                           ),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
                   Text(
-                    '🎉 One card left! 🎉',
+                    'One card left!',
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: value),
-                      fontSize: 18,
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                      shadows: const [
+                        Shadow(
+                          blurRadius: 10,
+                          color: Colors.black,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -335,7 +419,7 @@ class _GameScreenState extends State<GameScreen> {
   Widget _buildOpponentsSection(GameProvider provider) {
     final opponents = provider.opponents;
     final currentPlayerId = provider.gameState?.currentPlayer?.id;
-    
+
     if (opponents.isEmpty) {
       return Container(
         height: 60,
@@ -346,7 +430,7 @@ class _GameScreenState extends State<GameScreen> {
         ),
       );
     }
-    
+
     return Container(
       height: 75,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -357,33 +441,36 @@ class _GameScreenState extends State<GameScreen> {
           final player = opponents[index];
           final isCurrentTurn = player.id == currentPlayerId;
           final hasUno = player.hasUno;
-          
+
           return Container(
             margin: const EdgeInsets.symmetric(horizontal: 6),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              gradient: isCurrentTurn
-                  ? const LinearGradient(
-                      colors: [Color(0xFFE94560), Color(0xFFFF6B6B)],
-                    )
-                  : null,
+              gradient:
+                  isCurrentTurn
+                      ? const LinearGradient(
+                        colors: [Color(0xFFE94560), Color(0xFFFF6B6B)],
+                      )
+                      : null,
               color: isCurrentTurn ? null : Colors.white.withValues(alpha: 0.1),
               border: Border.all(
-                color: isCurrentTurn
-                    ? Colors.transparent
-                    : Colors.white.withValues(alpha: 0.2),
+                color:
+                    isCurrentTurn
+                        ? Colors.transparent
+                        : Colors.white.withValues(alpha: 0.2),
                 width: 1,
               ),
-              boxShadow: isCurrentTurn
-                  ? [
-                      BoxShadow(
-                        color: const Color(0xFFE94560).withValues(alpha: 0.4),
-                        blurRadius: 10,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : null,
+              boxShadow:
+                  isCurrentTurn
+                      ? [
+                        BoxShadow(
+                          color: const Color(0xFFE94560).withValues(alpha: 0.4),
+                          blurRadius: 10,
+                          spreadRadius: 1,
+                        ),
+                      ]
+                      : null,
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -403,7 +490,10 @@ class _GameScreenState extends State<GameScreen> {
                     if (hasUno) ...[
                       const SizedBox(width: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xFFFDD835),
                           borderRadius: BorderRadius.circular(4),
@@ -452,7 +542,8 @@ class _GameScreenState extends State<GameScreen> {
     final gameState = provider.gameState;
     final topCard = gameState?.topDiscard;
     final activeColor = gameState?.effectiveColor;
-    
+    final pendingDraws = gameState?.pendingDraws ?? 0;
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -476,7 +567,9 @@ class _GameScreenState extends State<GameScreen> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  gameState?.isClockwise == true ? 'Clockwise' : 'Counter-Clockwise',
+                  gameState?.isClockwise == true
+                      ? 'Clockwise'
+                      : 'Counter-Clockwise',
                   style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 12,
@@ -486,9 +579,9 @@ class _GameScreenState extends State<GameScreen> {
               ],
             ),
           ),
-          
+
           const SizedBox(height: 24),
-          
+
           // Cards in center
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -498,123 +591,220 @@ class _GameScreenState extends State<GameScreen> {
                 onTap: () {
                   if (provider.isMyTurn && !provider.hasDrawnCard) {
                     provider.drawCard();
-                    AppToast.show(context, 'Card drawn!', type: AppToastType.info);
+
+                    if (pendingDraws > 0) {
+                      AppToast.show(
+                        context,
+                        'Drawing pending +$pendingDraws...',
+                        type: AppToastType.info,
+                      );
+                    } else {
+                      AppToast.show(
+                        context,
+                        'Card drawn!',
+                        type: AppToastType.info,
+                      );
+                    }
                   }
                 },
-                child: Container(
-                  width: 85,
-                  height: 125,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Color(0xFF1A1A2E),
-                        Color(0xFF0F3460),
-                      ],
-                    ),
-                    border: Border.all(
-                      color: provider.isMyTurn && !provider.hasDrawnCard
-                          ? const Color(0xFFE94560)
-                          : Colors.white24,
-                      width: provider.isMyTurn && !provider.hasDrawnCard ? 2 : 1,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: provider.isMyTurn && !provider.hasDrawnCard
-                            ? const Color(0xFFE94560).withValues(alpha: 0.3)
-                            : Colors.black.withValues(alpha: 0.3),
-                        blurRadius: 15,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text(
-                          'ONO',
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 3,
-                          ),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 85,
+                      height: 125,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFF1A1A2E), Color(0xFF0F3460)],
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${gameState?.drawPile.length ?? 0}',
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 14,
-                          ),
+                        border: Border.all(
+                          color:
+                              provider.isMyTurn && !provider.hasDrawnCard
+                                  ? const Color(0xFFE94560)
+                                  : Colors.white24,
+                          width:
+                              provider.isMyTurn && !provider.hasDrawnCard
+                                  ? 2
+                                  : 1,
                         ),
-                        if (provider.isMyTurn && !provider.hasDrawnCard) ...[
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE94560),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Text(
-                              'DRAW',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                        boxShadow: [
+                          BoxShadow(
+                            color:
+                                provider.isMyTurn && !provider.hasDrawnCard
+                                    ? const Color(
+                                      0xFFE94560,
+                                    ).withValues(alpha: 0.3)
+                                    : Colors.black.withValues(alpha: 0.3),
+                            blurRadius: 15,
+                            offset: const Offset(0, 5),
                           ),
                         ],
-                      ],
+                      ),
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text(
+                              'ONO',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 3,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '${gameState?.drawPile.length ?? 0}',
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 14,
+                              ),
+                            ),
+                            if (provider.isMyTurn &&
+                                !provider.hasDrawnCard) ...[
+                              const SizedBox(height: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE94560),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  pendingDraws > 0 ? 'DRAW' : 'DRAW',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+
+                    // Pending Draws Badge
+                    if (pendingDraws > 0)
+                      Positioned(
+                        top: -10,
+                        right: -10,
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: const BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black45,
+                                blurRadius: 4,
+                                offset: Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Text(
+                            '+$pendingDraws',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              
+
               const SizedBox(width: 24),
-              
+
               // Discard pile
-              // Discard pile (Multi-Stack or Single)
-              if (gameState?.activeMultiThrowStack != null && 
-                  gameState!.activeMultiThrowStack!.isNotEmpty)
-                SizedBox(
-                  key: _discardPileKey, 
-                  width: 140 + (gameState.activeMultiThrowStack!.length - 1) * 20.0,
-                  height: 200, // Approximate large card height
-                  child: Stack(
-                     alignment: Alignment.centerLeft,
-                     children: List.generate(gameState.activeMultiThrowStack!.length, (index) {
-                        final card = gameState.activeMultiThrowStack![index];
-                        return Positioned(
-                          left: index * 20.0,
-                          child: UnoCardWidget(
-                            card: card,
+              GestureDetector(
+                onTap: () {
+                  showHorseshoeHistory(context, gameState?.discardPile ?? []);
+                },
+                child: SizedBox(
+                  key: _discardPileKey, // Keep key for animations
+                  child:
+                      (gameState?.activeMultiThrowStack != null &&
+                              gameState!.activeMultiThrowStack!.isNotEmpty)
+                          ? SizedBox(
+                            width:
+                                140 +
+                                (gameState.activeMultiThrowStack!.length - 1) *
+                                    20.0,
+                            height: 200,
+                            child: Stack(
+                              alignment: Alignment.centerLeft,
+                              children: List.generate(
+                                gameState.activeMultiThrowStack!.length,
+                                (index) {
+                                  final card =
+                                      gameState.activeMultiThrowStack![index];
+                                  return Positioned(
+                                    left: index * 20.0,
+                                    child: UnoCardWidget(
+                                      card: card,
+                                      isPlayable: false,
+                                      activeColor:
+                                          index ==
+                                                  gameState
+                                                          .activeMultiThrowStack!
+                                                          .length -
+                                                      1
+                                              ? activeColor
+                                              : null,
+                                      size: UnoCardSize.large,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          )
+                          : (topCard != null)
+                          ? UnoCardWidget(
+                            card: topCard,
                             isPlayable: false,
-                            activeColor: index == gameState.activeMultiThrowStack!.length - 1 
-                                ? activeColor 
-                                : null, // Only last card shows active color glow if wild
+                            activeColor: activeColor,
                             size: UnoCardSize.large,
-                          ),
-                        );
-                     }),
-                  ),
-                )
-              else if (topCard != null)
-                UnoCardWidget(
-                  card: topCard,
-                  isPlayable: false,
-                  activeColor: activeColor,
-                  size: UnoCardSize.large,
+                          )
+                          : Container(
+                            width: 140,
+                            height: 200,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.2),
+                                width: 3,
+                              ),
+                              color: Colors.white.withValues(alpha: 0.05),
+                            ),
+                            child: const Center(
+                              child: Text(
+                                'Host\'s\nTurn',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                          ), // Visual placeholder if empty
                 ),
+              ),
             ],
           ),
-          
+
           const SizedBox(height: 20),
-          
+
           // Active color indicator (for wild cards)
           if (activeColor != null && topCard?.isWild == true)
             Container(
@@ -651,15 +841,20 @@ class _GameScreenState extends State<GameScreen> {
                 ],
               ),
             ),
-          
+
           // Pass turn button (after drawing)
-          if (provider.isMyTurn && provider.hasDrawnCard)
+          // Hide pass turn if we have pending draws (must complete them)
+          if (provider.isMyTurn && provider.hasDrawnCard && pendingDraws == 0)
             Padding(
               padding: const EdgeInsets.only(top: 20),
               child: ElevatedButton.icon(
                 onPressed: () {
                   provider.passTurn();
-                  AppToast.show(context, 'Turn passed', type: AppToastType.info);
+                  AppToast.show(
+                    context,
+                    'Turn passed',
+                    type: AppToastType.info,
+                  );
                 },
                 icon: const Icon(Icons.skip_next, size: 20),
                 label: const Text(
@@ -669,7 +864,10 @@ class _GameScreenState extends State<GameScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFE94560),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 14,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(25),
                   ),
@@ -682,12 +880,14 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   Widget _buildMyHand(BuildContext context, GameProvider provider) {
+    final myCards = provider.myCards;
     final myPlayer = provider.myPlayer;
     if (myPlayer == null) return const SizedBox.shrink();
-    
+
     final hasUno = myPlayer.hasUno;
+
     final bottomPadding = MediaQuery.of(context).padding.bottom;
-    
+
     return Container(
       padding: EdgeInsets.only(
         top: 12,
@@ -697,10 +897,7 @@ class _GameScreenState extends State<GameScreen> {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Colors.transparent,
-            Colors.black.withValues(alpha: 0.5),
-          ],
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.5)],
         ),
       ),
       child: Column(
@@ -742,7 +939,7 @@ class _GameScreenState extends State<GameScreen> {
                 ],
               ),
             ),
-          
+
           // UNO Button and Throw Selected Button row
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
@@ -754,16 +951,25 @@ class _GameScreenState extends State<GameScreen> {
                   GestureDetector(
                     onTap: () {
                       // Trigger Animation
-                      final selectedCards = myPlayer.hand.where((c) => _selectedCardIds.contains(c.id)).toList();
-                      _flyCardsToCenter(_selectedCardIds.toList(), selectedCards);
-                      
+                      final selectedCards =
+                          myPlayer.hand
+                              .where((c) => _selectedCardIds.contains(c.id))
+                              .toList();
+                      _flyCardsToCenter(
+                        _selectedCardIds.toList(),
+                        selectedCards,
+                      );
+
                       // Send THROW_MULTIPLE
                       provider.throwMultipleCards(_selectedCardIds.toList());
                       _clearSelection();
                     },
                     child: Container(
                       margin: const EdgeInsets.only(right: 16),
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
                           colors: [Color(0xFFA4CD01), Color(0xFF7CB342)],
@@ -771,7 +977,9 @@ class _GameScreenState extends State<GameScreen> {
                         borderRadius: BorderRadius.circular(30),
                         boxShadow: [
                           BoxShadow(
-                            color: const Color(0xFFA4CD01).withValues(alpha: 0.6),
+                            color: const Color(
+                              0xFFA4CD01,
+                            ).withValues(alpha: 0.6),
                             blurRadius: 15,
                             spreadRadius: 2,
                           ),
@@ -780,7 +988,11 @@ class _GameScreenState extends State<GameScreen> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.play_arrow, color: Colors.white, size: 20),
+                          const Icon(
+                            Icons.play_arrow,
+                            color: Colors.white,
+                            size: 20,
+                          ),
                           const SizedBox(width: 6),
                           Text(
                             'Throw ${_selectedCardIds.length}',
@@ -794,37 +1006,55 @@ class _GameScreenState extends State<GameScreen> {
                       ),
                     ),
                   ),
-                
+
                 // UNO Button
                 GestureDetector(
-                  onTap: provider.canCallUno ? () {
-                    provider.callUno();
-                  } : null,
+                  onTap:
+                      provider.canCallUno
+                          ? () {
+                            provider.callUno();
+                          }
+                          : null,
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 28,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
-                      gradient: provider.canCallUno
-                          ? const LinearGradient(
-                              colors: [Color(0xFFE53935), Color(0xFFFF9800), Color(0xFFFDD835)],
-                            )
-                          : null,
-                      color: provider.canCallUno ? null : Colors.grey.withValues(alpha: 0.3),
+                      gradient:
+                          provider.canCallUno
+                              ? const LinearGradient(
+                                colors: [
+                                  Color(0xFFE53935),
+                                  Color(0xFFFF9800),
+                                  Color(0xFFFDD835),
+                                ],
+                              )
+                              : null,
+                      color:
+                          provider.canCallUno
+                              ? null
+                              : Colors.grey.withValues(alpha: 0.3),
                       borderRadius: BorderRadius.circular(30),
-                      boxShadow: provider.canCallUno
-                          ? [
-                              BoxShadow(
-                                color: const Color(0xFFE53935).withValues(alpha: 0.6),
-                                blurRadius: 15,
-                                spreadRadius: 2,
-                              ),
-                            ]
-                          : null,
+                      boxShadow:
+                          provider.canCallUno
+                              ? [
+                                BoxShadow(
+                                  color: const Color(
+                                    0xFFE53935,
+                                  ).withValues(alpha: 0.6),
+                                  blurRadius: 15,
+                                  spreadRadius: 2,
+                                ),
+                              ]
+                              : null,
                     ),
                     child: Text(
                       'UNO!',
                       style: TextStyle(
-                        color: provider.canCallUno ? Colors.white : Colors.white38,
+                        color:
+                            provider.canCallUno ? Colors.white : Colors.white38,
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
                         letterSpacing: 2,
@@ -832,7 +1062,7 @@ class _GameScreenState extends State<GameScreen> {
                     ),
                   ),
                 ),
-                
+
                 // Clear selection button (visible when in selection mode)
                 if (_isSelectionMode)
                   GestureDetector(
@@ -844,48 +1074,64 @@ class _GameScreenState extends State<GameScreen> {
                         color: Colors.red.withValues(alpha: 0.8),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.close, color: Colors.white, size: 18),
+                      child: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 18,
+                      ),
                     ),
                   ),
               ],
             ),
           ),
-          
+
           // Cards - increased height for better visibility
           SizedBox(
             height: 150, // Increased from 120 for better card lift visibility
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: myPlayer.hand.length,
+              itemCount: myCards.length,
               itemBuilder: (context, index) {
-                final card = myPlayer.hand[index];
-                final isPlayable = provider.isMyTurn && provider.canPlayCard(card);
+                final card = myCards[index];
+                final isPlayable =
+                    provider.isMyTurn && provider.canPlayCard(card);
                 final isSelected = _selectedCardIds.contains(card.id);
                 // Create key for this card if needed
                 if (!_cardKeys.containsKey(card.id)) {
-                   _cardKeys[card.id] = GlobalKey();
+                  _cardKeys[card.id] = GlobalKey();
                 }
 
                 return GestureDetector(
                   onLongPress: () {
                     // Conditional Multi-Selection Logic
-                    if (card.isWild) return; 
+                    if (card.isWild) return;
 
                     // 1. Check if playable
                     if (!isPlayable) {
-                         AppToast.show(context, 'First card must be playable', type: AppToastType.error);
-                         return;
+                      AppToast.show(
+                        context,
+                        'First card must be playable',
+                        type: AppToastType.error,
+                      );
+                      return;
                     }
 
                     // 2. Count matches in hand
-                    final matchCount = myPlayer.hand.where((c) => c.value == card.value && !c.isWild).length;
-                    
+                    final matchCount =
+                        myPlayer.hand
+                            .where((c) => c.value == card.value && !c.isWild)
+                            .length;
+
                     // 3. Allow only if > 1 match
                     if (matchCount > 1) {
                       _toggleCardSelection(card.id, card, provider);
                     } else {
-                       AppToast.show(context, 'Single play only (need matching cards)', type: AppToastType.info);
+                      AppToast.show(
+                        context,
+                        'Single play only (need matching cards)',
+                        type: AppToastType.info,
+                      );
                     }
                   },
                   onTap: () {
@@ -894,12 +1140,20 @@ class _GameScreenState extends State<GameScreen> {
                       if (_canSelectCard(card, provider)) {
                         _toggleCardSelection(card.id, card, provider);
                       } else {
-                        AppToast.show(context, 'Cards must have the same value', type: AppToastType.info);
+                        AppToast.show(
+                          context,
+                          'Cards must have the same value',
+                          type: AppToastType.info,
+                        );
                       }
                     } else if (isPlayable) {
                       _playCard(context, provider, card);
                     } else if (provider.isMyTurn) {
-                      AppToast.show(context, 'Cannot play this card', type: AppToastType.error);
+                      AppToast.show(
+                        context,
+                        'Cannot play this card',
+                        type: AppToastType.error,
+                      );
                     }
                   },
                   child: Padding(
@@ -918,7 +1172,7 @@ class _GameScreenState extends State<GameScreen> {
               },
             ),
           ),
-          
+
           // Card count
           Padding(
             padding: const EdgeInsets.only(top: 6),
@@ -936,18 +1190,30 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _playCard(BuildContext context, GameProvider provider, UnoCard card) {
+    // Logic split for Wild vs Normal to time the animation correctly
     if (card.isWild) {
       // Show color picker for wild cards
       showDialog(
         context: context,
-        builder: (context) => ColorPickerDialog(
-          onColorSelected: (color) {
-            provider.playCard(card, chosenColor: color);
-            AppToast.show(context, 'Card played!', type: AppToastType.success);
-          },
-        ),
+        builder:
+            (context) => ColorPickerDialog(
+              onColorSelected: (color) {
+                // Trigger animation AFTER color selection
+                _flyCardsToCenter([card.id], [card]);
+
+                provider.playCard(card, chosenColor: color);
+                AppToast.show(
+                  context,
+                  'Card played!',
+                  type: AppToastType.success,
+                );
+              },
+            ),
       );
     } else {
+      // Trigger animation immediately for normal cards
+      _flyCardsToCenter([card.id], [card]);
+
       provider.playCard(card);
       AppToast.show(context, 'Card played!', type: AppToastType.success);
     }
@@ -956,100 +1222,120 @@ class _GameScreenState extends State<GameScreen> {
   void _showResignConfirmation(BuildContext context, GameProvider provider) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.flag, color: Color(0xFFE94560)),
-            SizedBox(width: 12),
-            Text('Resign Game?', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: const Text(
-          'Are you sure you want to resign? You will be removed from this game.',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              provider.resign();
-              Navigator.of(context).pushReplacementNamed('/lobby');
-              AppToast.show(context, 'You resigned from the game', type: AppToastType.info);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE94560),
+      builder:
+          (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-            child: const Text('Resign'),
+            title: const Row(
+              children: [
+                Icon(Icons.flag, color: Color(0xFFE94560)),
+                SizedBox(width: 12),
+                Text('Resign Game?', style: TextStyle(color: Colors.white)),
+              ],
+            ),
+            content: const Text(
+              'Are you sure you want to resign? Your cards will be returned to the deck and other players will be notified.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.pop(context); // Close dialog
+                  await provider.resign(); // FIX: resignGame -> resign
+                  if (context.mounted) {
+                    Navigator.of(context).pushReplacementNamed('/lobby');
+                    AppToast.show(
+                      context,
+                      'You resigned from the game',
+                      type: AppToastType.info,
+                    );
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE94560),
+                ),
+                child: const Text('Resign'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
   void _showLeaveConfirmation(BuildContext context, GameProvider provider) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Leave Game?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Are you sure you want to leave? You can rejoin with the same room code.',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              provider.leaveRoom();
-              Navigator.of(context).pushReplacementNamed('/lobby');
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFE94560),
+      builder:
+          (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-            child: const Text('Leave'),
+            title: const Text(
+              'Leave Game?',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: const Text(
+              'Are you sure you want to leave? You can rejoin with the same room code.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  provider.leaveRoom();
+                  Navigator.of(context).pushReplacementNamed('/lobby');
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE94560),
+                ),
+                child: const Text('Leave'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
   void _showWinnerAnimationDialog(BuildContext context, GameProvider provider) {
     final isWinner = provider.isWinnerAnimationForMe;
     final winnerName = provider.winnerAnimationName ?? 'Unknown';
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => WinnerAnimationDialog(
-        winnerName: winnerName,
-        isWinner: isWinner,
-        onAnimationComplete: () {
-          Navigator.of(dialogContext).pop();
-          
-          if (provider.isHost) {
-            // Host kicks the winner and continues game
-            provider.kickWinnerAndContinue();
-          } else {
-            provider.dismissWinnerAnimation();
-          }
-          
-          // If I was the winner, I get kicked
-          if (isWinner) {
-            AppToast.show(context, 'Congratulations! You won! 🎉', type: AppToastType.success);
-          }
-        },
-      ),
+      builder:
+          (dialogContext) => WinnerAnimationDialog(
+            winnerName: winnerName,
+            isWinner: isWinner,
+            onAnimationComplete: () {
+              Navigator.of(dialogContext).pop();
+
+              if (provider.isHost) {
+                // Host kicks the winner and continues game
+                provider.kickWinnerAndContinue();
+              } else {
+                provider.dismissWinnerAnimation();
+              }
+
+              // If I was the winner, I get kicked
+              if (isWinner) {
+                AppToast.show(
+                  context,
+                  'Congratulations! You won! 🎉',
+                  type: AppToastType.success,
+                );
+              }
+            },
+          ),
     );
   }
 }
@@ -1076,37 +1362,37 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
   late AnimationController _scaleController;
   late AnimationController _rotateController;
   late AnimationController _confettiController;
-  
+
   late Animation<double> _scaleAnimation;
   late Animation<double> _rotateAnimation;
 
   @override
   void initState() {
     super.initState();
-    
+
     _scaleController = AnimationController(
       duration: const Duration(milliseconds: 800),
       vsync: this,
     );
-    
+
     _rotateController = AnimationController(
       duration: const Duration(milliseconds: 1500),
       vsync: this,
     );
-    
+
     _confettiController = AnimationController(
       duration: const Duration(milliseconds: 2000),
       vsync: this,
     );
-    
+
     _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _scaleController, curve: Curves.elasticOut),
     );
-    
+
     _rotateAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _rotateController, curve: Curves.easeInOut),
     );
-    
+
     _startAnimation();
   }
 
@@ -1115,7 +1401,7 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
     await Future.delayed(const Duration(milliseconds: 300));
     _rotateController.forward();
     _confettiController.forward();
-    
+
     // Auto-close after animation
     await Future.delayed(const Duration(seconds: 4));
     if (mounted) {
@@ -1153,10 +1439,7 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                   ],
                 ),
                 borderRadius: BorderRadius.circular(30),
-                border: Border.all(
-                  color: const Color(0xFFFDD835),
-                  width: 3,
-                ),
+                border: Border.all(color: const Color(0xFFFDD835), width: 3),
                 boxShadow: [
                   BoxShadow(
                     color: const Color(0xFFFDD835).withValues(alpha: 0.5),
@@ -1185,7 +1468,9 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                                 shape: BoxShape.circle,
                                 gradient: RadialGradient(
                                   colors: [
-                                    const Color(0xFFFDD835).withValues(alpha: 0.4),
+                                    const Color(
+                                      0xFFFDD835,
+                                    ).withValues(alpha: 0.4),
                                     Colors.transparent,
                                   ],
                                 ),
@@ -1201,9 +1486,9 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                       );
                     },
                   ),
-                  
+
                   const SizedBox(height: 24),
-                  
+
                   // Winner text
                   Text(
                     widget.isWinner ? '🎉 YOU WON! 🎉' : '🎊 WINNER! 🎊',
@@ -1214,9 +1499,9 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                       letterSpacing: 2,
                     ),
                   ),
-                  
+
                   const SizedBox(height: 12),
-                  
+
                   Text(
                     widget.winnerName,
                     style: const TextStyle(
@@ -1225,11 +1510,11 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  
+
                   const SizedBox(height: 8),
-                  
+
                   Text(
-                    widget.isWinner 
+                    widget.isWinner
                         ? 'Congratulations! You\'ll be leaving the room.'
                         : 'The winner will leave, game continues!',
                     textAlign: TextAlign.center,
@@ -1238,9 +1523,9 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                       fontSize: 14,
                     ),
                   ),
-                  
+
                   const SizedBox(height: 20),
-                  
+
                   // Confetti animation indicator
                   AnimatedBuilder(
                     animation: _confettiController,
@@ -1253,7 +1538,9 @@ class _WinnerAnimationDialogState extends State<WinnerAnimationDialog>
                             child: Transform.translate(
                               offset: Offset(
                                 0,
-                                -20 * _confettiController.value * (1 + index * 0.2),
+                                -20 *
+                                    _confettiController.value *
+                                    (1 + index * 0.2),
                               ),
                               child: Opacity(
                                 opacity: 1 - _confettiController.value,

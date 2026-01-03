@@ -14,33 +14,45 @@ class MessageType {
   static const String gameOver = 'GAME_OVER';
   static const String syncRequest = 'SYNC_REQUEST';
   static const String heartbeat = 'HEARTBEAT';
-  static const String unoCall = 'UNO_CALL';  // Player called UNO!
-  static const String prepareGame = 'PREPARE_GAME';  // Host signals game is about to start
-  static const String ackReady = 'ACK_READY';  // Joiner acknowledges ready
-  
+  static const String unoCall = 'UNO_CALL'; // Player called UNO!
+  static const String notification = 'NOTIFICATION'; // Generic notification
+  static const String gameGap = 'GAME_GAP'; // Gap in game state sequence
+  static const String prepareGame =
+      'PREPARE_GAME'; // Host signals game is about to start
+  static const String ackReady = 'ACK_READY'; // Joiner acknowledges ready
+
   // Sequential Sync Messages (Step-by-step state transfer)
-  static const String setPlayers = 'SET_PLAYERS';  // Step 1: Player list
-  static const String setDeck = 'SET_DECK';        // Step 2: Deck chunk
-  static const String setHand = 'SET_HAND';        // Step 3: Player's hand
-  static const String goLive = 'GO_LIVE';          // Step 4: Final trigger
-  static const String reqResend = 'REQ_RESEND';    // Request re-send of a step
-  
+  static const String setPlayers = 'SET_PLAYERS'; // Step 1: Player list
+  static const String setDeck = 'SET_DECK'; // Step 2: Deck chunk
+  static const String setHand = 'SET_HAND'; // Step 3: Player's hand
+  static const String goLive = 'GO_LIVE'; // Step 4: Final trigger
+  static const String reqResend = 'REQ_RESEND'; // Request re-send of a step
+
   // Full State Snapshot Architecture
-  static const String initGameStart = 'INIT_GAME_START';  // Tiny message to prepare UI
-  static const String gameSnapshot = 'GAME_SNAPSHOT';      // Full compressed state
-  static const String snapshotAck = 'SNAPSHOT_ACK';        // Acknowledgement of snapshot
-  
+  static const String initGameStart =
+      'INIT_GAME_START'; // Tiny message to prepare UI
+  static const String gameSnapshot = 'GAME_SNAPSHOT'; // Full compressed state
+  static const String snapshotAck =
+      'SNAPSHOT_ACK'; // Acknowledgement of snapshot
+
   // Reliable Handshake (3-step sync)
-  static const String startSignal = 'START_SIGNAL';        // Host -> Joiners: Game starting
-  static const String readyToReceive = 'READY_TO_RECEIVE'; // Joiner -> Host: Ready for snapshot
-  
+  static const String startSignal =
+      'START_SIGNAL'; // Host -> Joiners: Game starting
+  static const String readyToReceive =
+      'READY_TO_RECEIVE'; // Joiner -> Host: Ready for snapshot
+
   // Snapshot Chunking (for large payloads)
-  static const String snapshotPart1 = 'SNAPSHOT_PART_1';   // First chunk
-  static const String snapshotPart2 = 'SNAPSHOT_PART_2';   // Second chunk
-  
+  static const String snapshotPart1 = 'SNAPSHOT_PART_1'; // First chunk
+  static const String snapshotPart2 = 'SNAPSHOT_PART_2'; // Second chunk
+
   // Multi-Card Play
-  static const String throwMultiple = 'THROW_MULTIPLE';    // Play multiple matching cards
-  
+  static const String throwMultiple =
+      'THROW_MULTIPLE'; // Play multiple matching cards
+
+  // Game End
+  static const String gameEnded =
+      'GAME_ENDED'; // Auto-kick after 20s winner display
+
   static const String error = 'ERROR';
 }
 
