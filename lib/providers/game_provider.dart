@@ -2123,18 +2123,20 @@ class GameProvider extends ChangeNotifier {
     _lastStateSequence++;
 
     // Use compact JSON for reduced payload
+    // CRITICAL: toCompactJson() already includes discard pile as 'x', but we verify it's there
     final payload = _gameState!.toCompactJson();
     
-    // CRITICAL: Ensure discard pile is explicitly included (even if empty)
-    // This prevents discard pile from being lost during serialization
-    if (_gameState!.discardPile.isNotEmpty) {
-      payload['x'] = _gameState!.discardPile.map((c) => c.toCompactJson()).toList();
-      payload['discardPile'] = _gameState!.discardPile.map((c) => c.toJson()).toList();
-      debugPrint('DEBUG: Explicitly including discard pile (${_gameState!.discardPile.length} cards) in broadcast');
-    } else {
-      // Even if empty, ensure the key exists
-      payload['x'] = [];
-      payload['discardPile'] = [];
+    // CRITICAL: Verify discard pile is in the payload (toCompactJson should include it)
+    // If it's missing, add it explicitly
+    if (!payload.containsKey('x') || (payload['x'] as List?)?.isEmpty == true) {
+      if (_gameState!.discardPile.isNotEmpty) {
+        payload['x'] = _gameState!.discardPile.map((c) => c.toCompactJson()).toList();
+        payload['discardPile'] = _gameState!.discardPile.map((c) => c.toJson()).toList();
+        debugPrint('DEBUG: Discard pile was missing in toCompactJson, adding explicitly (${_gameState!.discardPile.length} cards)');
+      } else {
+        payload['x'] = [];
+        payload['discardPile'] = [];
+      }
     }
     
     // CRITICAL: Verify hands are in players array before adding hands map
@@ -2373,17 +2375,11 @@ class GameProvider extends ChangeNotifier {
         debugPrint('DEBUG: Failed to parse hands: $e');
       }
 
-      // CRITICAL: Merge discard pile from separate column if available
-      // Check if discard pile is in the payload (from separate column)
-      final discardPileFromColumn = message.payload['discard_pile'] as List<dynamic>?;
-      if (discardPileFromColumn != null && discardPileFromColumn.isNotEmpty) {
-        final discardCards = discardPileFromColumn
-            .map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
-            .toList();
-        if (discardCards.isNotEmpty) {
-          newState = newState.copyWith(discardPile: discardCards);
-          debugPrint('DEBUG: Merged discard pile from column (${discardCards.length} cards)');
-        }
+      // CRITICAL: Preserve discard pile if incoming state has empty discard pile but we have cards
+      // This prevents discard pile from being cleared by out-of-order updates
+      if (newState.discardPile.isEmpty && _gameState?.discardPile.isNotEmpty == true && _gameState!.phase == GamePhase.playing) {
+        debugPrint('DEBUG: Preserving discard pile (${_gameState!.discardPile.length} cards) - incoming was empty');
+        newState = newState.copyWith(discardPile: _gameState!.discardPile);
       }
       
       // CRITICAL FIX: Merge Logic for Players & HostId
@@ -2669,8 +2665,16 @@ class GameProvider extends ChangeNotifier {
     // Add hands map to compact JSON
     stateJson['hands'] = hands;
     
-    // Ensure hands are also in players array (compact format uses 'h' key)
-    // This is already done by toCompactJson(), but we verify it's there
+    // CRITICAL: Ensure discard pile is always included (toCompactJson should include it as 'x')
+    // Verify it's present and not accidentally cleared
+    if (!stateJson.containsKey('x') || (stateJson['x'] as List?)?.isEmpty == true) {
+      if (state.discardPile.isNotEmpty) {
+        stateJson['x'] = state.discardPile.map((c) => c.toCompactJson()).toList();
+        debugPrint('DEBUG: SSOT: Discard pile was missing, adding (${state.discardPile.length} cards)');
+      } else {
+        stateJson['x'] = [];
+      }
+    }
     
     return stateJson;
   }

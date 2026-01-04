@@ -259,19 +259,7 @@ class SupabaseUnoService {
                 room['game_state'] as Map? ?? {},
               );
 
-              // CRITICAL: Inject discard_pile from separate column
-              final discardPile = room['discard_pile'] as List<dynamic>?;
-              if (discardPile != null && discardPile.isNotEmpty) {
-                _cachedGameState['x'] = discardPile; // Compact key
-                _cachedGameState['discardPile'] = discardPile; // Long form for compatibility
-                _cachedGameState['discard_pile'] = discardPile; // Column name for provider
-                debugPrint('Service: Loaded discard pile from column (${discardPile.length} cards)');
-              } else {
-                // Ensure empty discard pile is also set
-                _cachedGameState['x'] = [];
-                _cachedGameState['discardPile'] = [];
-                _cachedGameState['discard_pile'] = [];
-              }
+              // Discard pile is already in game_state JSONB, no need to inject separately
 
               // Inject extra metadata for the UI/GameProvider
               _cachedGameState['status'] = room['status'];
@@ -762,9 +750,9 @@ class SupabaseUnoService {
         debugPrint('WARNING: State being stored without hands map!');
       }
       
-      // Extract discard pile separately (CRITICAL: Store in separate column)
+      // Verify discard pile is in the state
       final discardPile = newState['x'] as List<dynamic>? ?? newState['discardPile'] as List<dynamic>?;
-      debugPrint('Supabase: Storing discard pile with ${discardPile?.length ?? 0} cards');
+      debugPrint('Supabase: Storing state with discard pile (${discardPile?.length ?? 0} cards)');
       
       // Determine status based on game phase (CRITICAL: Don't set 'playing' in lobby)
       final phase = newState['phase'] as String?;
@@ -772,7 +760,7 @@ class SupabaseUnoService {
       
       debugPrint('Supabase: Updating state with phase=${phase}, status=${status}');
       
-      // 1. Use RPC function to atomically update game_state, discard_pile, and status
+      // 1. Use RPC function to atomically update game_state and status
       try {
         await _client.rpc(
           'update_game_state',
@@ -780,24 +768,18 @@ class SupabaseUnoService {
             'p_room_code': _currentRoomCode!,
             'p_game_state': newState,
             'p_status': status,
-            'p_discard_pile': discardPile ?? [],
           },
         );
       } catch (rpcError) {
         debugPrint('Supabase: RPC update_game_state failed, falling back to direct update: $rpcError');
         
         // Fallback: Direct update if RPC fails
-        final updateData = <String, dynamic>{
-          'game_state': newState,
-          'status': status,
-        };
-        if (discardPile != null) {
-          updateData['discard_pile'] = discardPile;
-        }
-        
         await _client
             .from(_tableName)
-            .update(updateData)
+            .update({
+              'game_state': newState,
+              'status': status,
+            })
             .eq('room_code', _currentRoomCode!);
       }
 
