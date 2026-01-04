@@ -37,3 +37,9 @@ android {
 flutter {
     source = "../.."
 }
+
+// Disable Kotlin incremental compilation to fix path issues with different drive roots
+// This prevents "different roots" errors when project is on D: and dependencies are on C:
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    incremental = false
+}

@@ -1,16 +1,18 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
-/// Podium screen showing winners in order (1st, 2nd, 3rd...)
+/// Winner celebration screen - shows single winner with animated celebration
 /// 20-second countdown with Exit button, triggers cleanup when done
 class PodiumScreen extends StatefulWidget {
-  final List<String> winners;
+  final String winnerName;
+  final bool isMe; // Whether the current player is the winner
   final VoidCallback onExit;
   final VoidCallback onCleanup;
 
   const PodiumScreen({
     super.key,
-    required this.winners,
+    required this.winnerName,
+    this.isMe = false,
     required this.onExit,
     required this.onCleanup,
   });
@@ -19,14 +21,55 @@ class PodiumScreen extends StatefulWidget {
   State<PodiumScreen> createState() => _PodiumScreenState();
 }
 
-class _PodiumScreenState extends State<PodiumScreen> {
+class _PodiumScreenState extends State<PodiumScreen>
+    with TickerProviderStateMixin {
   int _countdown = 20;
   Timer? _timer;
+  late AnimationController _trophyController;
+  late AnimationController _confettiController;
+  late AnimationController _scaleController;
+  late Animation<double> _trophyAnimation;
+  late Animation<double> _scaleAnimation;
 
   @override
   void initState() {
     super.initState();
     _startCountdown();
+    _setupAnimations();
+  }
+
+  void _setupAnimations() {
+    // Trophy bounce animation
+    _trophyController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+
+    _trophyAnimation = Tween<double>(begin: -10, end: 10).animate(
+      CurvedAnimation(
+        parent: _trophyController,
+        curve: Curves.easeInOut,
+      ),
+    );
+
+    // Scale animation for entrance
+    _scaleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    _scaleAnimation = CurvedAnimation(
+      parent: _scaleController,
+      curve: Curves.elasticOut,
+    );
+
+    _scaleController.forward();
+
+    // Confetti animation
+    _confettiController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat();
   }
 
   void _startCountdown() {
@@ -43,123 +86,155 @@ class _PodiumScreenState extends State<PodiumScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _trophyController.dispose();
+    _confettiController.dispose();
+    _scaleController.dispose();
     super.dispose();
-  }
-
-  String _getPlaceEmoji(int place) {
-    switch (place) {
-      case 0: return '🥇';
-      case 1: return '🥈';
-      case 2: return '🥉';
-      default: return '🏅';
-    }
-  }
-
-  String _getPlaceText(int place) {
-    switch (place) {
-      case 0: return '1st Place';
-      case 1: return '2nd Place';
-      case 2: return '3rd Place';
-      default: return '${place + 1}th Place';
-    }
-  }
-
-  Color _getPlaceColor(int place) {
-    switch (place) {
-      case 0: return const Color(0xFFFFD700); // Gold
-      case 1: return const Color(0xFFC0C0C0); // Silver
-      case 2: return const Color(0xFFCD7F32); // Bronze
-      default: return Colors.white70;
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Color(0xFF1A1A2E),
-            Color(0xFF16213E),
-            Color(0xFF0F3460),
-          ],
+          colors: widget.isMe
+              ? [
+                  const Color(0xFFFFD700).withValues(alpha: 0.3),
+                  const Color(0xFF1A1A2E),
+                  const Color(0xFF16213E),
+                ]
+              : [
+                  const Color(0xFF1A1A2E),
+                  const Color(0xFF16213E),
+                  const Color(0xFF0F3460),
+                ],
         ),
       ),
       child: SafeArea(
         child: Column(
           children: [
             const SizedBox(height: 40),
-            // Trophy icon
-            const Text('🏆', style: TextStyle(fontSize: 80)),
-            const SizedBox(height: 16),
-            // Title
-            const Text(
-              'GAME OVER!',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 36,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 4,
-              ),
-            ),
-            const SizedBox(height: 32),
-            // Winners list
-            Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                itemCount: widget.winners.length,
-                itemBuilder: (context, index) {
-                  final winner = widget.winners[index];
-                  final color = _getPlaceColor(index);
-                  
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+            
+            // Animated Trophy
+            AnimatedBuilder(
+              animation: _trophyAnimation,
+              builder: (context, child) {
+                return Transform.translate(
+                  offset: Offset(0, _trophyAnimation.value),
+                  child: ScaleTransition(
+                    scale: _scaleAnimation,
                     child: Container(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: color, width: 2),
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            const Color(0xFFFFD700).withValues(alpha: 0.3),
+                            Colors.transparent,
+                          ],
+                        ),
                       ),
-                      child: Row(
-                        children: [
-                          Text(
-                            _getPlaceEmoji(index),
-                            style: const TextStyle(fontSize: 40),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _getPlaceText(index),
-                                  style: TextStyle(
-                                    color: color,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                Text(
-                                  winner,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                      child: const Text(
+                        '🏆',
+                        style: TextStyle(fontSize: 120),
                       ),
                     ),
-                  );
-                },
+                  ),
+                );
+              },
+            ),
+            
+            const SizedBox(height: 24),
+            
+            // Game Over Title
+            ScaleTransition(
+              scale: _scaleAnimation,
+              child: const Text(
+                'GAME OVER!',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 42,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 6,
+                  shadows: [
+                    Shadow(
+                      color: Color(0xFFFFD700),
+                      blurRadius: 20,
+                    ),
+                  ],
+                ),
               ),
             ),
+            
+            const SizedBox(height: 40),
+            
+            // Winner Card
+            ScaleTransition(
+              scale: _scaleAnimation,
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 32),
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      const Color(0xFFFFD700).withValues(alpha: 0.2),
+                      const Color(0xFFFFD700).withValues(alpha: 0.1),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: const Color(0xFFFFD700),
+                    width: 3,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.5),
+                      blurRadius: 30,
+                      spreadRadius: 5,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    // Winner Label
+                    Text(
+                      widget.isMe ? 'YOU WON!' : 'WINNER',
+                      style: TextStyle(
+                        color: const Color(0xFFFFD700),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 3,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Winner Name
+                    Text(
+                      widget.winnerName,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Celebration Emoji
+                    const Text(
+                      '🎉',
+                      style: TextStyle(fontSize: 48),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const Spacer(),
+            
             // Countdown timer
             Padding(
               padding: const EdgeInsets.all(24),
@@ -180,7 +255,7 @@ class _PodiumScreenState extends State<PodiumScreen> {
                       value: _countdown / 20,
                       backgroundColor: Colors.white24,
                       valueColor: const AlwaysStoppedAnimation<Color>(
-                        Color(0xFFE94560),
+                        Color(0xFFFFD700),
                       ),
                       minHeight: 8,
                     ),
@@ -195,11 +270,13 @@ class _PodiumScreenState extends State<PodiumScreen> {
                         widget.onExit();
                       },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFE94560),
+                        backgroundColor: const Color(0xFFFFD700),
+                        foregroundColor: Colors.black,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
+                        elevation: 8,
                       ),
                       child: const Text(
                         'EXIT NOW',

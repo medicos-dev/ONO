@@ -52,6 +52,21 @@ class MessageType {
   // Game End
   static const String gameEnded =
       'GAME_ENDED'; // Auto-kick after 20s winner display
+  static const String roomClosed = 'ROOM_CLOSED';
+
+  // Global Event System for Animations (Transient Events)
+  static const String gameEvent = 'GAME_EVENT'; // Generic event wrapper for animations
+  static const String wildColorChange =
+      'WILD_COLOR_CHANGE'; // Wild card color selection animation
+  static const String unoAnnounced =
+      'UNO_ANNOUNCED'; // Player called UNO animation
+  static const String gameOverCelebration =
+      'GAME_OVER_CELEBRATION'; // Game end celebration animation
+
+  // Host Management
+  static const String hostLeft = 'HOST_LEFT'; // Host left - kick all players
+  static const String hostResigned = 'HOST_RESIGNED'; // Host resigned - new host selected
+  static const String newHostSelected = 'NEW_HOST_SELECTED'; // New host notification
 
   static const String error = 'ERROR';
 }

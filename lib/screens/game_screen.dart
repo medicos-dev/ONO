@@ -164,27 +164,30 @@ class _GameScreenState extends State<GameScreen> {
           });
         }
 
-        // Show Podium Screen (Game Over)
+        // Show Podium Screen (Game Over) - Single Winner Celebration
         if (provider.gameState?.phase == GamePhase.finished && !_podiumShown) {
           _podiumShown = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
+            final winnerName = provider.gameState?.winnerName ?? 'Unknown';
+            final isMe = provider.gameState?.winnerId == provider.myPlayerId;
+            
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder:
-                    (context) => PodiumScreen(
-                      winners: provider.gameState?.winners ?? [],
-                      onExit: () {
-                        provider.exitToMenu();
-                        Navigator.of(context).pushReplacementNamed('/lobby');
-                      },
-                      onCleanup: () async {
-                        // Host: Delete room and exit
-                        await provider.exitToMenu();
-                        if (context.mounted) {
-                          Navigator.of(context).pushReplacementNamed('/lobby');
-                        }
-                      },
-                    ),
+                builder: (context) => PodiumScreen(
+                  winnerName: winnerName,
+                  isMe: isMe,
+                  onExit: () {
+                    provider.exitToMenu();
+                    Navigator.of(context).pushReplacementNamed('/lobby');
+                  },
+                  onCleanup: () async {
+                    // Host: Delete room and exit
+                    await provider.exitToMenu();
+                    if (context.mounted) {
+                      Navigator.of(context).pushReplacementNamed('/lobby');
+                    }
+                  },
+                ),
               ),
             );
           });
@@ -203,6 +206,38 @@ class _GameScreenState extends State<GameScreen> {
               Navigator.of(
                 context,
               ).pushNamedAndRemoveUntil('/', (route) => false);
+            }
+          });
+        }
+
+        // HOST_LEFT Listener (Host left - kick all players)
+        if (provider.error == 'HOST_LEFT') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              AppToast.show(
+                context,
+                'Host left the room',
+                type: AppToastType.error,
+              );
+              provider.exitToMenu(); // Ensure disconnection
+              Navigator.of(
+                context,
+              ).pushNamedAndRemoveUntil('/', (route) => false);
+            }
+          });
+        }
+
+        // NEW_HOST_SELECTED Listener (Show toast notification)
+        if (provider.error != null && provider.error!.startsWith('NEW_HOST_SELECTED:')) {
+          final newHostName = provider.error!.split(':')[1];
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              AppToast.show(
+                context,
+                '$newHostName is now the new host!',
+                type: AppToastType.success,
+              );
+              provider.clearError(); // Clear the error after showing toast
             }
           });
         }
@@ -725,79 +760,88 @@ class _GameScreenState extends State<GameScreen> {
 
               const SizedBox(width: 24),
 
-              // Discard pile
+              // Discard pile - Keyed to sequence number and top card for instant rebuilds
               GestureDetector(
                 onTap: () {
                   showHorseshoeHistory(context, gameState?.discardPile ?? []);
                 },
                 child: SizedBox(
-                  key: _discardPileKey, // Keep key for animations
-                  child:
-                      (gameState?.activeMultiThrowStack != null &&
-                              gameState!.activeMultiThrowStack!.isNotEmpty)
-                          ? SizedBox(
-                            width:
-                                140 +
-                                (gameState.activeMultiThrowStack!.length - 1) *
-                                    20.0,
-                            height: 200,
-                            child: Stack(
-                              alignment: Alignment.centerLeft,
-                              children: List.generate(
-                                gameState.activeMultiThrowStack!.length,
-                                (index) {
-                                  final card =
-                                      gameState.activeMultiThrowStack![index];
-                                  return Positioned(
-                                    left: index * 20.0,
-                                    child: UnoCardWidget(
-                                      card: card,
-                                      isPlayable: false,
-                                      activeColor:
-                                          index ==
-                                                  gameState
-                                                          .activeMultiThrowStack!
-                                                          .length -
-                                                      1
-                                              ? activeColor
-                                              : null,
-                                      size: UnoCardSize.large,
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          )
-                          : (topCard != null)
-                          ? UnoCardWidget(
-                            card: topCard,
-                            isPlayable: false,
-                            activeColor: activeColor,
-                            size: UnoCardSize.large,
-                          )
-                          : Container(
-                            width: 140,
-                            height: 200,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.2),
-                                width: 3,
-                              ),
-                              color: Colors.white.withValues(alpha: 0.05),
-                            ),
-                            child: const Center(
-                              child: Text(
-                                'Host\'s\nTurn',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white54,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
+                  key: ValueKey<String>(
+                    // Key changes when discard pile updates, forcing rebuild
+                    // Use discard pile length and last card ID for reliable updates
+                    gameState?.discardPile.isNotEmpty == true
+                        ? 'discard-${gameState!.discardPile.last.id}-${gameState.discardPile.length}'
+                        : 'empty-0',
+                  ),
+                  child: SizedBox(
+                    key: _discardPileKey, // Keep key for animations
+                    child:
+                        (gameState?.activeMultiThrowStack != null &&
+                                gameState!.activeMultiThrowStack!.isNotEmpty)
+                            ? SizedBox(
+                              width:
+                                  140 +
+                                  (gameState.activeMultiThrowStack!.length - 1) *
+                                      20.0,
+                              height: 200,
+                              child: Stack(
+                                alignment: Alignment.centerLeft,
+                                children: List.generate(
+                                  gameState.activeMultiThrowStack!.length,
+                                  (index) {
+                                    final card =
+                                        gameState.activeMultiThrowStack![index];
+                                    return Positioned(
+                                      left: index * 20.0,
+                                      child: UnoCardWidget(
+                                        card: card,
+                                        isPlayable: false,
+                                        activeColor:
+                                            index ==
+                                                    gameState
+                                                            .activeMultiThrowStack!
+                                                            .length -
+                                                        1
+                                                ? activeColor
+                                                : null,
+                                        size: UnoCardSize.large,
+                                      ),
+                                    );
+                                  },
                                 ),
                               ),
-                            ),
-                          ), // Visual placeholder if empty
+                            )
+                            : (topCard != null)
+                            ? UnoCardWidget(
+                              card: topCard,
+                              isPlayable: false,
+                              activeColor: activeColor,
+                              size: UnoCardSize.large,
+                            )
+                            : Container(
+                              width: 140,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                  width: 3,
+                                ),
+                                color: Colors.white.withValues(alpha: 0.05),
+                              ),
+                              child: const Center(
+                                child: Text(
+                                  'Host\'s\nTurn',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.white54,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ),
+                            ), // Visual placeholder if empty
+                  ),
                 ),
               ),
             ],

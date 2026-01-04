@@ -145,17 +145,16 @@ class _HorseshoeHistoryOverlayState extends State<HorseshoeHistoryOverlay>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Center point: bottom-center of the viewing area
+        // Center point: ScreenWidth / 2
         final centerX = constraints.maxWidth / 2;
-        final centerY =
-            constraints.maxHeight * 0.85; // Moved down for crescent at bottom
+        // Standardize pivot for responsiveness (1.5x height ensures fan is at bottom)
+        final centerY = constraints.maxHeight * 1.5;
 
-        // Radius for the arc (adaptive to screen width, limited for mobile)
-        final radius = min(constraints.maxWidth * 0.35, 150.0);
+        // Radius: Tighter as requested
+        final radius = constraints.maxHeight * 0.7;
 
-        // Max angular spread: ~60° total (-30° to +30°)
-        const maxAngleDegrees = 30.0;
-        const maxAngle = maxAngleDegrees * pi / 180; // Convert to radians
+        // Max angular spread: Even tighter overlap
+        const maxAngle = 0.15;
 
         return Stack(
           clipBehavior: Clip.none,
@@ -167,21 +166,18 @@ class _HorseshoeHistoryOverlayState extends State<HorseshoeHistoryOverlay>
             // Angle in radians (-maxAngle to +maxAngle)
             final angle = normalizedIndex * maxAngle;
 
-            // Polar coordinate formula:
-            // x = centerX + radius * sin(angle) -> spread horizontally
-            // y = centerY - radius * cos(angle) -> arc upward
-            final x =
-                centerX +
-                radius * sin(angle) * 2.5; // Multiply for wider spread
-            final y = centerY - radius * cos(angle) * 0.6; // Flatter arc
+            // Polar Coordinates
+            // x = center + r * sin(angle)
+            // y = center - r * cos(angle)
+            final x = centerX + radius * sin(angle);
+            final y = centerY - radius * cos(angle);
 
-            // Card rotation follows the hand curve (matches angle direction)
-            // Rotation: -20° for leftmost, 0° for center, +20° for rightmost
-            final rotationDegrees = normalizedIndex * 20.0;
+            // Card rotation follows the hand curve
+            final rotationDegrees = normalizedIndex * 15.0;
             final rotation = rotationDegrees * pi / 180;
 
             // Scale: newest (last) cards are slightly larger and on top
-            final scale = 0.65 + (index / count) * 0.35;
+            final scale = 0.7 + (index / count) * 0.3;
 
             final card = displayCards[index];
 
@@ -196,12 +192,15 @@ class _HorseshoeHistoryOverlayState extends State<HorseshoeHistoryOverlay>
                 angle: rotation,
                 child: Transform.scale(
                   scale: scale,
-                  child: DefaultTextStyle(
-                    style: const TextStyle(decoration: TextDecoration.none),
-                    child: UnoCardWidget(
-                      card: card,
-                      isPlayable: false,
-                      size: UnoCardSize.small,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: DefaultTextStyle(
+                      style: const TextStyle(decoration: TextDecoration.none),
+                      child: UnoCardWidget(
+                        card: card,
+                        isPlayable: false,
+                        size: UnoCardSize.small,
+                      ),
                     ),
                   ),
                 ),

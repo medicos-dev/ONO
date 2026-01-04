@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart'; // For HapticFeedback
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'message_types.dart';
 
@@ -48,7 +49,7 @@ class SupabaseUnoService {
       url: url,
       anonKey: anonKey,
       realtimeClientOptions: const RealtimeClientOptions(
-        eventsPerSecond: 10, // Rate limiting for cost efficiency
+        eventsPerSecond: 20, // Increased for lower latency (was 10)
       ),
     );
     debugPrint('Supabase: Initialized successfully');
@@ -122,19 +123,49 @@ class SupabaseUnoService {
 
   /// Join an existing room
   Future<void> _joinRoom(String roomCode) async {
-    // 1. Get Room ID
+    // 1. Get Room ID and game state
     final roomRes =
         await _client
             .from('uno_rooms')
-            .select('id, status')
+            .select('id, status, game_state')
             .eq('room_code', roomCode)
             .maybeSingle();
 
     if (roomRes == null) throw Exception('Room not found');
 
-    // Check Status
-    if (roomRes['status'] != 'lobby') {
+    final status = roomRes['status'] as String?;
+    final gameState = roomRes['game_state'] as Map<String, dynamic>?;
+    
+    // Check if game has actually started (has players with cards)
+    bool gameActuallyStarted = false;
+    if (gameState != null) {
+      final players = gameState['p'] as List<dynamic>? ?? gameState['players'] as List<dynamic>?;
+      if (players != null && players.isNotEmpty) {
+        // Check if any player has cards (game has started)
+        for (final player in players) {
+          final playerMap = player as Map<String, dynamic>;
+          final hand = playerMap['h'] as List<dynamic>? ?? playerMap['hand'] as List<dynamic>?;
+          if (hand != null && hand.isNotEmpty) {
+            gameActuallyStarted = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Allow join if status is 'lobby' OR if status is 'playing' but game hasn't actually started
+    // This handles cases where status is stuck as 'playing' from a previous session
+    if (status == 'playing' && gameActuallyStarted) {
       throw Exception('Game already in progress');
+    }
+    
+    // If status is 'playing' but game hasn't started, reset to 'lobby'
+    if (status == 'playing' && !gameActuallyStarted) {
+      debugPrint('Supabase: Status is playing but game not started, resetting to lobby');
+      await _client
+          .from('uno_rooms')
+          .update({'status': 'lobby'})
+          .eq('room_code', roomCode);
     }
 
     _currentRoomId = roomRes['id'];
@@ -154,8 +185,10 @@ class SupabaseUnoService {
   // Cache for Stream Merging
   List<Map<String, dynamic>> _cachedPlayers = [];
   Map<String, dynamic> _cachedGameState = {};
-  bool _hasReceivedRoomData =
-      false; // Track if we've ever received valid room data
+  bool _hasReceivedRoomData = false;
+
+  // Track previous turn to prevent spamming haptics
+  String? _previousTurnId;
 
   /// Setup Listeners for Rooms and Players
   // Setup Listeners for Rooms and Players
@@ -209,14 +242,13 @@ class SupabaseUnoService {
 
               _emitSynthesizedGameState();
             } else {
-              // CLIENT SAFETY: Never trigger room deletion from client side
-              // Room deletion should only be initiated by Host actions
+              // CLIENT SAFETY: Check for definitive room closure
+              // If we have received valid room data before, and now it's gone AND players are empty -> Room Deleted
               if (!_isHost && _hasReceivedRoomData) {
                 debugPrint(
-                  'Supabase: Room appears empty - waiting for reconnect',
+                  'Supabase: Room data is empty - waiting for signal or reconnect...',
                 );
-                // Don't emit ROOM_CLOSED - let Host handle cleanup
-                // This prevents clients from triggering false room deletions
+                // _errorController.add('ROOM_CLOSED'); // DISABLED: Relies on broadcast
               } else if (!_hasReceivedRoomData) {
                 // Initial empty emission - ignore
                 debugPrint('Supabase: Ignoring initial empty room data');
@@ -240,6 +272,12 @@ class SupabaseUnoService {
           event: 'game_message',
           callback: (payload) {
             _handleBroadcastMessage(payload);
+          },
+        )
+        .onBroadcast(
+          event: 'game_event', // Separate channel for transient events
+          callback: (payload) {
+            _handleGameEvent(payload);
           },
         )
         .subscribe((status, error) {
@@ -287,6 +325,14 @@ class SupabaseUnoService {
 
     // Check for hands in game_state (Single Source of Truth for gameplay)
     final handsMap = _cachedGameState['hands'] as Map<String, dynamic>?;
+    
+    // CRITICAL: Also check if hands are in players array (compact format)
+    // The compact format stores hands in players array with key 'h'
+    final playersArray = _cachedGameState['p'] as List<dynamic>?;
+    
+    debugPrint(
+      'Service: Hands map: ${handsMap != null ? handsMap.length : 0} players, Players array: ${playersArray != null ? playersArray.length : 0} players',
+    );
 
     // CRITICAL: Inject the relational players list into the GameState payload
     // Map DB columns (player_name) to Player model keys (name)
@@ -294,11 +340,30 @@ class SupabaseUnoService {
         _cachedPlayers.map((p) {
           final pid = p['player_id'].toString();
 
-          // Use hand from game_state if available (SSOT), otherwise fallback to room_players
-          final List<dynamic> playerHand =
-              (handsMap != null && handsMap.containsKey(pid))
-                  ? handsMap[pid]
-                  : (p['cards'] ?? []);
+          // Priority 1: Use hand from game_state hands map (SSOT)
+          List<dynamic> playerHand = [];
+          if (handsMap != null && handsMap.containsKey(pid)) {
+            playerHand = handsMap[pid] as List<dynamic>;
+          } 
+          // Priority 2: Check players array (compact format)
+          else if (playersArray != null) {
+            try {
+              final playerInArray = playersArray.firstWhere(
+                (pl) => (pl as Map<String, dynamic>)['i'] == pid,
+                orElse: () => null,
+              );
+              if (playerInArray != null) {
+                final playerData = playerInArray as Map<String, dynamic>;
+                playerHand = playerData['h'] as List<dynamic>? ?? [];
+              }
+            } catch (e) {
+              debugPrint('Service: Error parsing player from array: $e');
+            }
+          }
+          // Priority 3: Fallback to room_players cards
+          if (playerHand.isEmpty) {
+            playerHand = (p['cards'] ?? []) as List<dynamic>;
+          }
 
           return {
             'id': pid,
@@ -308,6 +373,11 @@ class SupabaseUnoService {
             'hand': playerHand,
           };
         }).toList();
+    
+    // CRITICAL: Ensure hands map is also in the payload for SSOT
+    if (handsMap != null) {
+      synthesizedPayload['hands'] = handsMap;
+    }
 
     // Ensure the UI knows who the host is (DO NOT fallback to _myClientId - causes Joiner to think they're Host)
     // hostId comes from _cachedGameState['hostId'] which is injected from room stream
@@ -316,6 +386,27 @@ class SupabaseUnoService {
     debugPrint(
       'Service: Emitting synthesized state. Players: ${(synthesizedPayload['players'] as List).length}, hostId: ${synthesizedPayload['hostId']}',
     );
+
+    // HAPTICS & TURN NOTIFICATION (Lag Fix)
+    // Trigger vibrate if it's explicitly MY turn now (and wasn't before)
+    final currentTurnId = _cachedGameState['current_turn_id'] as String?;
+    if (currentTurnId != null) {
+      if (currentTurnId == _myClientId && _previousTurnId != _myClientId) {
+        debugPrint('HAPTIC: It is YOUR turn!');
+        HapticFeedback.vibrate();
+      }
+      _previousTurnId = currentTurnId;
+    }
+
+    // DISCARD PILE CHECK
+    // Ensure 'x' (discard) is present. If it's in the payload, it will be passed, but we log it for verification.
+    if (synthesizedPayload.containsKey('x')) {
+      // 'x' is the compact key for discardPile
+      // debugPrint('Service: Discard pile (x) is present.');
+    } else if (synthesizedPayload.containsKey('discardPile')) {
+      // Long form
+      // debugPrint('Service: Discard pile (long) is present.');
+    }
 
     _messageController.add(
       GameMessage(
@@ -334,6 +425,18 @@ class SupabaseUnoService {
         'Supabase: Attempting to delete room $roomCode by host $_myClientId',
       );
 
+      // First, reset status to 'lobby' before deleting (helps with cleanup)
+      try {
+        await _client
+            .from(_tableName)
+            .update({'status': 'lobby'})
+            .eq('room_code', roomCode);
+        debugPrint('Supabase: Reset status to lobby before delete');
+      } catch (e) {
+        debugPrint('Supabase: Failed to reset status before delete: $e');
+        // Continue with delete even if status reset fails
+      }
+
       // Delete where room_code matches AND host_id matches our ID
       // (Though RLS may enforce the host_id part, we add it here for clarity)
       await _client.from(_tableName).delete().eq('room_code', roomCode);
@@ -345,14 +448,15 @@ class SupabaseUnoService {
     }
   }
 
-  /// Update room status (e.g. 'playing')
+  /// Update room status (e.g. 'playing', 'lobby', 'finished')
   Future<void> updateRoomStatus(String status) async {
-    if (_currentRoomId == null) return;
+    if (_currentRoomId == null && _currentRoomCode == null) return;
     try {
-      await _client
-          .from(_tableName)
-          .update({'status': status})
-          .eq('id', _currentRoomId!);
+      final query = _currentRoomId != null
+          ? _client.from(_tableName).update({'status': status}).eq('id', _currentRoomId!)
+          : _client.from(_tableName).update({'status': status}).eq('room_code', _currentRoomCode!);
+      
+      await query;
       debugPrint('Supabase: Room status updated to $status');
     } catch (e) {
       debugPrint('Supabase: Failed to update room status: $e');
@@ -376,13 +480,21 @@ class SupabaseUnoService {
         'room_id': _currentRoomId,
         'player_id': playerId,
         'player_name': playerName,
-        // We do NOT set 'cards' or 'is_ready' here to avoid resetting state if re-joining
-        // But upsert MIGHT overwrite if we don't specify onConflict behavior carefully.
-        // In Supabase, upsert overwrites all columns provided.
-        // If we omit 'cards', it might set it to null or default if it's a new row,
-        // or keep connection if it's an update? actually upsert updates columns provided.
-        // Let's provide only the necessary columns.
+        'is_ready': false, // Ensure new joiners start as not ready
+        'cards': [], // Ensure new joiners have empty cards
       }, onConflict: 'room_id, player_id');
+      
+      // After joining, ensure room status is 'lobby' (not 'playing')
+      // This prevents status from being stuck as 'playing' from previous sessions
+      try {
+        await _client
+            .from('uno_rooms')
+            .update({'status': 'lobby'})
+            .eq('id', _currentRoomId!);
+        debugPrint('Supabase: Ensured room status is lobby after join');
+      } catch (e) {
+        debugPrint('Supabase: Failed to reset status after join: $e');
+      }
 
       debugPrint('Supabase: Robust DB join (upsert) completed.');
     } catch (e) {
@@ -406,21 +518,63 @@ class SupabaseUnoService {
   void _handleBroadcastMessage(Map<String, dynamic> payload) {
     try {
       final senderId = payload['senderId'] as String?;
-      if (senderId == _myClientId) return; // Skip own messages
+      final messageType = payload['type'] as String? ?? 'unknown';
+      
+      // CRITICAL: Allow GAME_STATE messages to pass through even from self
+      // This ensures the host receives their own broadcasts for UI sync
+      if (senderId == _myClientId && messageType != MessageType.gameState) {
+        return; // Skip own messages (except GAME_STATE)
+      }
 
-      debugPrint('Supabase: Received Broadcast message: ${payload['type']}');
+      debugPrint('Supabase: Received Broadcast message: $messageType');
 
       final message = GameMessage(
-        type: payload['type'] as String? ?? 'unknown',
+        type: messageType,
         senderId: senderId ?? 'unknown',
         senderName: payload['senderName'] as String? ?? 'Unknown',
         payload: payload['payload'] as Map<String, dynamic>? ?? {},
         sequenceNumber: payload['seq'] as int? ?? 0,
       );
 
+      // Special handling for ROOM_CLOSED broadcast
+      if (message.type == MessageType.roomClosed) {
+        debugPrint('Supabase: Received ROOM_CLOSED broadcast from Host');
+        _errorController.add('ROOM_CLOSED');
+        return;
+      }
+
+      // Special handling for HOST_LEFT broadcast
+      if (message.type == MessageType.hostLeft) {
+        debugPrint('Supabase: Received HOST_LEFT broadcast from Host');
+        _errorController.add('HOST_LEFT');
+        // Still add to message stream for provider to handle
+      }
+
       _messageController.add(message);
     } catch (e) {
       debugPrint('Supabase: Error handling broadcast: $e');
+    }
+  }
+
+  /// Handle transient game events (animations) - separate from GAME_STATE
+  void _handleGameEvent(Map<String, dynamic> payload) {
+    try {
+      final eventType = payload['eventType'] as String? ?? 'unknown';
+      debugPrint('Supabase: Received game event: $eventType');
+      
+      // Create a GameMessage with the actual event type (not GAME_EVENT wrapper)
+      final message = GameMessage(
+        type: eventType, // Use actual event type (WILD_COLOR_CHANGE, etc.)
+        senderId: payload['senderId'] as String? ?? 'unknown',
+        senderName: payload['senderName'] as String? ?? 'Unknown',
+        payload: payload['payload'] as Map<String, dynamic>? ?? {},
+        sequenceNumber: 0, // Events don't have sequence numbers
+      );
+      
+      // Add to message stream immediately (independent of GAME_STATE)
+      _messageController.add(message);
+    } catch (e) {
+      debugPrint('Supabase: Error handling game event: $e');
     }
   }
 
@@ -471,17 +625,73 @@ class SupabaseUnoService {
     }
   }
 
+  /// Send a transient game event (for animations)
+  /// These events are independent of GAME_STATE sequence and trigger UI immediately
+  Future<void> sendEvent(String eventType, Map<String, dynamic> eventData) async {
+    if (_currentRoomCode == null || _realtimeChannel == null) {
+      debugPrint('Supabase: Cannot send event - not connected to a room');
+      return;
+    }
+
+    // Wrap as GAME_EVENT for separate handling
+    final messageData = {
+      'type': MessageType.gameEvent,
+      'eventType': eventType, // WILD_COLOR_CHANGE, UNO_ANNOUNCED, etc.
+      'senderId': _myClientId,
+      'senderName': _myName,
+      'payload': eventData,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'isTransient': true, // Mark as transient (not state-dependent)
+    };
+
+    // Send via separate broadcast channel for events
+    await _realtimeChannel?.sendBroadcastMessage(
+      event: 'game_event', // Separate event channel
+      payload: messageData,
+    );
+    
+    debugPrint('Supabase: Sent game event: $eventType');
+  }
+
   /// Update game state in database (Host uses this)
   /// Atomically update game status and state (Start Game)
+  /// Also sets is_ready = true for ALL players
   Future<void> startRemoteGame(Map<String, dynamic> initialState) async {
-    if (_currentRoomCode == null) return;
+    if (_currentRoomCode == null || _currentRoomId == null) return;
 
     try {
       debugPrint('Supabase: Starting game (atomic update)...');
+      
+      // 1. Update uno_rooms table
       await _client
           .from(_tableName)
           .update({'status': 'playing', 'game_state': initialState})
           .eq('room_code', _currentRoomCode!);
+
+      // 2. Set is_ready = true for ALL players in room_players table
+      final playersArray = initialState['p'] as List<dynamic>?;
+      if (playersArray != null) {
+        final handsMap = initialState['hands'] as Map<String, dynamic>?;
+        
+        for (final playerData in playersArray) {
+          final playerMap = playerData as Map<String, dynamic>;
+          final playerId = playerMap['i'] as String?;
+          if (playerId == null) continue;
+          
+          // Get hand from hands map (SSOT)
+          final playerHand = handsMap?[playerId] as List<dynamic>? ?? [];
+          
+          await _client
+              .from('room_players')
+              .update({
+                'is_ready': true, // FIX: Set ready before dealing
+                'cards': playerHand, // Also update cards
+              })
+              .eq('room_id', _currentRoomId!)
+              .eq('player_id', playerId);
+        }
+        debugPrint('Supabase: Set is_ready=true for ${playersArray.length} players');
+      }
 
       debugPrint('Supabase: Game started successfully');
     } catch (e) {
@@ -491,17 +701,63 @@ class SupabaseUnoService {
   }
 
   /// Update remote game state (Host uses this)
+  /// Also updates room_players table to keep DB in sync with broadcasts
   Future<void> updateRemoteGameState(Map<String, dynamic> newState) async {
-    if (_currentRoomCode == null) return; // Guard
+    if (_currentRoomCode == null || _currentRoomId == null) return; // Guard
 
     try {
-      debugPrint('Supabase: Updating remote game state...');
+      debugPrint('Supabase: Updating remote game state and room_players...');
+      
+      // Verify hands are included before storing
+      final handsMap = newState['hands'] as Map<String, dynamic>?;
+      if (handsMap != null) {
+        debugPrint('Supabase: Storing state with hands map (${handsMap.length} players)');
+      } else {
+        debugPrint('WARNING: State being stored without hands map!');
+      }
+      
+      // Determine status based on game phase (CRITICAL: Don't set 'playing' in lobby)
+      final phase = newState['phase'] as String?;
+      final status = (phase == 'playing' || phase == 'finished') ? phase! : 'lobby';
+      
+      debugPrint('Supabase: Updating state with phase=${phase}, status=${status}');
+      
+      // 1. Update uno_rooms table with game_state and status
       await _client
           .from(_tableName)
-          .update({'game_state': newState})
+          .update({
+            'game_state': newState,
+            'status': status, // Set status based on phase, not always 'playing'
+          })
           .eq('room_code', _currentRoomCode!);
 
-      debugPrint('Supabase: Remote game state updated successfully');
+      // 2. Update room_players table: sync cards and is_ready for each player
+      if (handsMap != null && handsMap.isNotEmpty) {
+        final playersArray = newState['p'] as List<dynamic>?;
+        if (playersArray != null) {
+          for (final playerData in playersArray) {
+            final playerMap = playerData as Map<String, dynamic>;
+            final playerId = playerMap['i'] as String?;
+            if (playerId == null) continue;
+            
+            // Get hand from hands map (SSOT)
+            final playerHand = handsMap[playerId] as List<dynamic>? ?? [];
+            
+            // Update room_players table
+            await _client
+                .from('room_players')
+                .update({
+                  'cards': playerHand,
+                  'is_ready': true, // All players are ready during gameplay
+                })
+                .eq('room_id', _currentRoomId!)
+                .eq('player_id', playerId);
+          }
+          debugPrint('Supabase: Updated ${playersArray.length} players in room_players table');
+        }
+      }
+
+      debugPrint('Supabase: Remote game state and room_players updated successfully');
     } catch (e) {
       debugPrint('Supabase: Failed to update remote game state: $e');
       _errorController.add('Failed to update game state: $e');

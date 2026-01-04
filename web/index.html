@@ -1,38 +1,704 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="$FLUTTER_BASE_HREF">
-
   <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ONO - The Classic Game. Reimagined. Real-time multiplayer UNO game experience.">
+  <title>ONO - The Classic Game. Reimagined</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  
+  <!-- Libraries CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/studio-freight/lenis@1.0.29/bundled/lenis.min.js"></script>
+  <script src="https://unpkg.com/splitting/dist/splitting.min.js"></script>
+  <script src="https://unpkg.com/splitting/dist/splitting.css"></script>
+  <script src="https://unpkg.com/phosphor-icons"></script>
+  
+  <style>
+    @font-face {
+      font-family: 'SourGummy';
+      src: url('../assets/SourGummy-Medium.ttf') format('truetype');
+      font-weight: 500;
+      font-style: normal;
+    }
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="uno_aiks">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+    :root {
+      --neon-red: #ff006e;
+      --neon-blue: #00f5ff;
+      --neon-green: #39ff14;
+      --neon-yellow: #ffbe0b;
+      --dark-bg: #0a0a0f;
+      --dark-surface: #151520;
+      --dark-surface-2: #1a1a2e;
+      --text-primary: #ffffff;
+      --text-secondary: #b8b8c8;
+      --glass-bg: rgba(255, 255, 255, 0.05);
+      --glass-border: rgba(255, 255, 255, 0.1);
+    }
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-  <title>uno_aiks</title>
-  <link rel="manifest" href="manifest.json">
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'SourGummy', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--dark-bg);
+      color: var(--text-primary);
+      overflow-x: hidden;
+      cursor: none;
+      position: relative;
+    }
+
+    /* Noise Texture */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-image: 
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* Custom Cursor */
+    .cursor {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--neon-blue);
+      pointer-events: none;
+      z-index: 9999;
+      mix-blend-mode: difference;
+      transition: transform 0.2s ease;
+    }
+
+    .cursor-ring {
+      position: fixed;
+      width: 40px;
+      height: 40px;
+      border: 2px solid var(--neon-blue);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 9998;
+      mix-blend-mode: difference;
+      transform: translate(-50%, -50%) scale(0);
+      transition: transform 0.3s ease;
+    }
+
+    .cursor-ring.active {
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    /* Preloader */
+    .preloader {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--dark-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+      overflow: hidden;
+    }
+
+    .preloader-counter {
+      font-size: clamp(4rem, 15vw, 12rem);
+      font-weight: 500;
+      color: var(--neon-blue);
+      line-height: 1;
+      font-family: 'SourGummy', monospace;
+    }
+
+    .preloader-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--dark-bg);
+      transform: translateY(100%);
+    }
+
+    /* Hero Section */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      padding: 2rem;
+      overflow: hidden;
+    }
+
+    .hero-bg-cards {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .floating-card {
+      position: absolute;
+      width: 200px;
+      height: 280px;
+      background: linear-gradient(135deg, var(--neon-red), var(--neon-blue));
+      border-radius: 20px;
+      transform-style: preserve-3d;
+      transition: transform 0.1s ease-out;
+      box-shadow: 0 20px 60px rgba(0, 245, 255, 0.3);
+    }
+
+    .floating-card:nth-child(1) {
+      top: 10%;
+      left: 10%;
+      background: linear-gradient(135deg, var(--neon-red), #ff006e);
+    }
+
+    .floating-card:nth-child(2) {
+      top: 20%;
+      right: 15%;
+      background: linear-gradient(135deg, var(--neon-blue), #00f5ff);
+    }
+
+    .floating-card:nth-child(3) {
+      bottom: 15%;
+      left: 20%;
+      background: linear-gradient(135deg, var(--neon-green), #39ff14);
+    }
+
+    .floating-card:nth-child(4) {
+      bottom: 10%;
+      right: 10%;
+      background: linear-gradient(135deg, var(--neon-yellow), #ffbe0b);
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      max-width: 1200px;
+    }
+
+    .hero-title {
+      font-size: clamp(4rem, 15vw, 12rem);
+      font-weight: 500;
+      line-height: 0.9;
+      margin-bottom: 2rem;
+      background: linear-gradient(135deg, var(--neon-red), var(--neon-blue), var(--neon-green), var(--neon-yellow));
+      background-size: 300% 300%;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: gradientShift 5s ease infinite;
+    }
+
+    @keyframes gradientShift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    .hero-subtitle {
+      font-size: clamp(1.5rem, 4vw, 3rem);
+      color: var(--text-secondary);
+      margin-bottom: 3rem;
+      font-weight: 500;
+    }
+
+    .download-buttons {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 3rem;
+    }
+
+    .download-btn {
+      padding: 1rem 2.5rem;
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: 50px;
+      color: var(--text-primary);
+      text-decoration: none;
+      font-size: 1.1rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .download-btn::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+      transition: left 0.5s ease;
+    }
+
+    .download-btn:hover::before {
+      left: 100%;
+    }
+
+    .download-btn:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 10px 40px rgba(0, 245, 255, 0.3);
+      border-color: var(--neon-blue);
+    }
+
+    /* Features Section */
+    .features {
+      padding: 8rem 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: clamp(3rem, 8vw, 6rem);
+      text-align: center;
+      margin-bottom: 4rem;
+      font-weight: 500;
+    }
+
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      margin-top: 4rem;
+    }
+
+    .bento-card {
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 3rem;
+      transition: all 0.4s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bento-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, var(--neon-red), var(--neon-blue));
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+
+    .bento-card:hover::before {
+      opacity: 0.1;
+    }
+
+    .bento-card:hover {
+      transform: translateY(-10px);
+      border-color: var(--neon-blue);
+      box-shadow: 0 20px 60px rgba(0, 245, 255, 0.2);
+    }
+
+    .bento-icon {
+      font-size: 3rem;
+      margin-bottom: 1.5rem;
+      display: block;
+    }
+
+    .bento-title {
+      font-size: 1.8rem;
+      margin-bottom: 1rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .bento-desc {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* Marquee Section */
+    .marquee-section {
+      padding: 6rem 0;
+      overflow: hidden;
+      background: var(--dark-surface);
+      position: relative;
+    }
+
+    .marquee {
+      display: flex;
+      white-space: nowrap;
+      animation: marquee 30s linear infinite;
+    }
+
+    .marquee-text {
+      font-size: clamp(3rem, 8vw, 8rem);
+      font-weight: 500;
+      padding: 0 2rem;
+      background: linear-gradient(90deg, var(--neon-red), var(--neon-blue), var(--neon-green), var(--neon-yellow));
+      background-size: 200% 200%;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: gradientShift 3s ease infinite;
+    }
+
+    @keyframes marquee {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    /* Footer */
+    .footer {
+      padding: 4rem 2rem;
+      text-align: center;
+      background: var(--dark-surface-2);
+    }
+
+    .developer-credit {
+      margin-top: 3rem;
+      font-size: 1.2rem;
+    }
+
+    .developer-info {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .developer-image {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 2px solid var(--neon-blue);
+      object-fit: cover;
+    }
+
+    .glitch-text {
+      position: relative;
+      display: inline-block;
+      color: var(--neon-blue);
+      font-weight: 500;
+      animation: glitch 2s infinite;
+    }
+
+    @keyframes glitch {
+      0%, 100% {
+        transform: translate(0);
+        text-shadow: 0 0 10px var(--neon-blue);
+      }
+      20% {
+        transform: translate(-2px, 2px);
+        text-shadow: -2px 2px 10px var(--neon-red);
+      }
+      40% {
+        transform: translate(-2px, -2px);
+        text-shadow: 2px -2px 10px var(--neon-green);
+      }
+      60% {
+        transform: translate(2px, 2px);
+        text-shadow: -2px -2px 10px var(--neon-yellow);
+      }
+      80% {
+        transform: translate(2px, -2px);
+        text-shadow: 2px 2px 10px var(--neon-blue);
+      }
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .bento-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .download-buttons {
+        flex-direction: column;
+        align-items: center;
+      }
+      
+      .floating-card {
+        width: 120px;
+        height: 168px;
+      }
+    }
+
+    /* Splitting.js styles */
+    .splitting .char {
+      display: inline-block;
+    }
+  </style>
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <!-- Custom Cursor -->
+  <div class="cursor"></div>
+  <div class="cursor-ring"></div>
+
+  <!-- Preloader -->
+  <div class="preloader" id="preloader">
+    <div class="preloader-counter" id="counter">0</div>
+    <div class="preloader-overlay" id="overlay"></div>
+  </div>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="hero-bg-cards">
+      <div class="floating-card" data-card="1"></div>
+      <div class="floating-card" data-card="2"></div>
+      <div class="floating-card" data-card="3"></div>
+      <div class="floating-card" data-card="4"></div>
+    </div>
+    
+    <div class="hero-content">
+      <h1 class="hero-title" data-splitting>ONO</h1>
+      <p class="hero-subtitle" data-splitting>The Classic Game. Reimagined.</p>
+      
+      <div class="download-buttons">
+        <a href="#" class="download-btn" data-cursor-hover>
+          <i class="ph ph-apple-logo"></i>
+          <span>Download for iOS</span>
+        </a>
+        <a href="#" class="download-btn" data-cursor-hover>
+          <i class="ph ph-android-logo"></i>
+          <span>Download for Android</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section class="features">
+    <h2 class="section-title" data-splitting>Features</h2>
+    
+    <div class="bento-grid">
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-lightning bento-icon" style="color: var(--neon-yellow);"></i>
+        <h3 class="bento-title">Real-time Sync</h3>
+        <p class="bento-desc">Experience seamless multiplayer gameplay with instant synchronization. Every card play, every move, happens in real-time across all devices.</p>
+      </div>
+      
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-devices bento-icon" style="color: var(--neon-blue);"></i>
+        <h3 class="bento-title">Cross-Platform</h3>
+        <p class="bento-desc">Play with friends regardless of their device. iOS, Android - everyone can join the same game room and compete together.</p>
+      </div>
+      
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-clock-clockwise bento-icon" style="color: var(--neon-green);"></i>
+        <h3 class="bento-title">Horseshoe History</h3>
+        <p class="bento-desc">Track every move with our unique horseshoe-shaped history viewer. Review your game strategy and learn from each play.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Marquee Section -->
+  <section class="marquee-section">
+    <div class="marquee">
+      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD •</span>
+      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD •</span>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="developer-credit">
+      <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Developed by</p>
+      <div class="developer-info">
+        <img src="../assets/aiks.jpg" alt="Developer" class="developer-image">
+        <span class="glitch-text">AIKS</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Initialize Splitting.js
+    Splitting();
+
+    // Preloader Animation
+    const counter = document.getElementById('counter');
+    const overlay = document.getElementById('overlay');
+    const preloader = document.getElementById('preloader');
+    
+    let count = 0;
+    const target = 100;
+    const duration = 2000;
+    const increment = target / (duration / 16);
+    
+    const updateCounter = () => {
+      count += increment;
+      if (count < target) {
+        counter.textContent = Math.floor(count);
+        requestAnimationFrame(updateCounter);
+      } else {
+        counter.textContent = target;
+        
+        // Animate overlay
+        gsap.to(overlay, {
+          y: '-100%',
+          duration: 1,
+          ease: 'power4.inOut',
+          onComplete: () => {
+            preloader.style.display = 'none';
+            initAnimations();
+          }
+        });
+      }
+    };
+    
+    updateCounter();
+
+    // Initialize Lenis Smooth Scroll
+    const lenis = new Lenis({
+      duration: 1.2,
+      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+      orientation: 'vertical',
+      gestureOrientation: 'vertical',
+      smoothWheel: true,
+      wheelMultiplier: 1,
+      smoothTouch: false,
+      touchMultiplier: 2,
+      infinite: false,
+    });
+
+    function raf(time) {
+      lenis.raf(time);
+      requestAnimationFrame(raf);
+    }
+
+    requestAnimationFrame(raf);
+
+    // Register ScrollTrigger
+    gsap.registerPlugin(ScrollTrigger);
+
+    // Custom Cursor
+    const cursor = document.querySelector('.cursor');
+    const cursorRing = document.querySelector('.cursor-ring');
+    let mouseX = 0;
+    let mouseY = 0;
+    let ringX = 0;
+    let ringY = 0;
+
+    document.addEventListener('mousemove', (e) => {
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+      cursor.style.left = mouseX + 'px';
+      cursor.style.top = mouseY + 'px';
+    });
+
+    const animateRing = () => {
+      ringX += (mouseX - ringX) * 0.1;
+      ringY += (mouseY - ringY) * 0.1;
+      cursorRing.style.left = ringX + 'px';
+      cursorRing.style.top = ringY + 'px';
+      requestAnimationFrame(animateRing);
+    };
+    animateRing();
+
+    // Cursor hover effect
+    const hoverElements = document.querySelectorAll('[data-cursor-hover]');
+    hoverElements.forEach(el => {
+      el.addEventListener('mouseenter', () => {
+        cursorRing.classList.add('active');
+      });
+      el.addEventListener('mouseleave', () => {
+        cursorRing.classList.remove('active');
+      });
+    });
+
+    // Floating Cards Parallax
+    const cards = document.querySelectorAll('.floating-card');
+    document.addEventListener('mousemove', (e) => {
+      const mouseX = e.clientX / window.innerWidth;
+      const mouseY = e.clientY / window.innerHeight;
+      
+      cards.forEach((card, index) => {
+        const speed = (index + 1) * 0.5;
+        const x = (mouseX - 0.5) * speed * 50;
+        const y = (mouseY - 0.5) * speed * 50;
+        const rotateX = (mouseY - 0.5) * speed * 10;
+        const rotateY = (mouseX - 0.5) * speed * 10;
+        
+        card.style.transform = `translate(${x}px, ${y}px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+      });
+    });
+
+    // Initialize Animations
+    function initAnimations() {
+      // Text reveal animations
+      const splitTexts = document.querySelectorAll('[data-splitting]');
+      splitTexts.forEach(text => {
+        const chars = text.querySelectorAll('.char');
+        gsap.from(chars, {
+          y: 100,
+          opacity: 0,
+          duration: 0.8,
+          stagger: 0.02,
+          ease: 'power3.out',
+          scrollTrigger: {
+            trigger: text,
+            start: 'top 80%',
+            toggleActions: 'play none none none'
+          }
+        });
+      });
+
+      // Bento cards animation
+      const bentoCards = document.querySelectorAll('.bento-card');
+      gsap.from(bentoCards, {
+        y: 100,
+        opacity: 0,
+        duration: 1,
+        stagger: 0.2,
+        ease: 'power3.out',
+        scrollTrigger: {
+          trigger: '.bento-grid',
+          start: 'top 80%',
+          toggleActions: 'play none none none'
+        }
+      });
+
+      // Parallax scale effect for images
+      gsap.utils.toArray('.bento-card').forEach(card => {
+        gsap.to(card, {
+          scale: 1.05,
+          scrollTrigger: {
+            trigger: card,
+            start: 'top 80%',
+            end: 'bottom 20%',
+            scrub: true
+          }
+        });
+      });
+    }
+  </script>
 </body>
 </html>

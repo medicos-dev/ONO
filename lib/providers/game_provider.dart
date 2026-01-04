@@ -30,6 +30,7 @@ class GameProvider extends ChangeNotifier {
   String? _winnerAnimationName;
   bool _isWinnerAnimationForMe = false;
   bool _wasKickedAsWinner = false;
+  bool _kicked = false; // Flag to indicate if player was kicked/room closed
   bool _showWildAnimation = false; // Trigger for wild card celebration
 
   // JOIN_REQUEST retry logic for clients
@@ -177,6 +178,7 @@ class GameProvider extends ChangeNotifier {
     _winnerAnimationName = null;
     _isWinnerAnimationForMe = false;
     _wasKickedAsWinner = false;
+    _kicked = false;
     _hasReceivedGameState = false;
     _hasCalledUno = false;
     _unoCallerName = null;
@@ -339,15 +341,6 @@ class GameProvider extends ChangeNotifier {
       return;
     }
 
-    // Guard: Don't overwrite valid player list with smaller list (stream hiccup)
-    final currentCount = _gameState?.players.length ?? 0;
-    if (rows.length < currentCount && currentCount > 0) {
-      debugPrint(
-        'DEBUG: Ignoring player shrink from $currentCount to ${rows.length}.',
-      );
-      return;
-    }
-
     // Use hostId from current state if available to identify host
     final hostId = _gameState?.hostId;
 
@@ -360,16 +353,31 @@ class GameProvider extends ChangeNotifier {
         }).toList();
 
     debugPrint(
-      'DEBUG: Relational Players Update: ${newPlayers.length} players. Host=$hostId',
+      'DEBUG: Relational Players Update: ${newPlayers.length} players. Host=$hostId (Current: ${_gameState?.players.length ?? 0})',
     );
 
-    // Merge with current state (Preserve other state fields)
-    _gameState = _gameState!.copyWith(players: newPlayers);
-
-    debugPrint(
-      'Provider: UI Update triggered. Players: ${_gameState!.players.length}',
-    );
-    notifyListeners();
+    // CRITICAL: In lobby phase, always accept player updates (don't block on count)
+    // This ensures host sees new players joining immediately
+    final currentCount = _gameState?.players.length ?? 0;
+    if (_gameState?.phase == GamePhase.lobby) {
+      // In lobby, always update to show new players
+      _gameState = _gameState!.copyWith(players: newPlayers);
+      debugPrint(
+        'Provider: UI Update triggered (LOBBY). Players: ${_gameState!.players.length}',
+      );
+      notifyListeners();
+    } else if (rows.length >= currentCount) {
+      // In playing phase, only update if count increases or stays same
+      _gameState = _gameState!.copyWith(players: newPlayers);
+      debugPrint(
+        'Provider: UI Update triggered. Players: ${_gameState!.players.length}',
+      );
+      notifyListeners();
+    } else {
+      debugPrint(
+        'DEBUG: Ignoring player shrink from $currentCount to ${rows.length} (not in lobby).',
+      );
+    }
   }
 
   void _startSyncTimer() {
@@ -485,6 +493,24 @@ class GameProvider extends ChangeNotifier {
       case MessageType.gameEnded:
         _handleGameEnded(message);
         break;
+      case MessageType.wildColorChange:
+        _handleWildColorChange(message);
+        break;
+      case MessageType.unoAnnounced:
+        _handleUnoAnnounced(message);
+        break;
+      case MessageType.gameOverCelebration:
+        _handleGameOverCelebration(message);
+        break;
+      case MessageType.hostLeft:
+        _handleHostLeft(message);
+        break;
+      case MessageType.hostResigned:
+        _handleHostResigned(message);
+        break;
+      case MessageType.newHostSelected:
+        _handleNewHostSelected(message);
+        break;
       case MessageType.heartbeat:
         // Heartbeat received
         break;
@@ -509,19 +535,13 @@ class GameProvider extends ChangeNotifier {
         return;
       }
 
-      if (_gameState?.phase == GamePhase.lobby) {
-        debugPrint('DEBUG: Host closed the room (Lobby). Leaving...');
-        leaveRoom();
-        _error = 'Host closed the room';
-        notifyListeners();
-        return; // Don't auto-clear this error immediately
-      } else {
-        // Game is playing/finished. Ignore or handle differently (Zombie check will handle cleanup)
-        debugPrint(
-          'DEBUG: Room closed while playing. Ignoring safe-exit kick.',
-        );
-        return;
-      }
+      debugPrint('DEBUG: Host closed the room. Kicking self...');
+      _kicked =
+          true; // Use usage-specific flag if available, or just rely on error message
+      leaveRoom();
+      _error = 'Host closed the room';
+      notifyListeners();
+      return;
     }
 
     _error = error;
@@ -579,6 +599,7 @@ class GameProvider extends ChangeNotifier {
   }
 
   void _handleMoveAttempt(GameMessage message) {
+    // Only host processes MOVE_ATTEMPT (both from clients and themselves)
     if (!_isHost || _gameState == null) return;
     if (_gameState!.phase != GamePhase.playing) return;
 
@@ -609,20 +630,57 @@ class GameProvider extends ChangeNotifier {
       return;
     }
 
-    // Apply move
+    // Broadcast Wild Color Change Event BEFORE applying move (using sendEvent for immediate delivery)
+    final wasWild = card.isWild;
+    if (wasWild && chosenColor != null) {
+      _networkService.sendEvent(
+        MessageType.wildColorChange,
+        {'color': chosenColor.index},
+      );
+    }
+
+    // Apply move (host processes their own moves here too)
+    final previousDiscardCount = _gameState!.discardPile.length;
     _gameState = GameLogic.applyCardEffect(
       state: _gameState!,
       card: card,
       playerId: playerId,
       chosenColor: chosenColor,
     );
+    
+    // DEBUG: Verify discard pile was updated
+    final newDiscardCount = _gameState!.discardPile.length;
+    debugPrint('DEBUG: Card played - Discard pile: $previousDiscardCount -> $newDiscardCount');
+    if (newDiscardCount <= previousDiscardCount && _gameState!.phase == GamePhase.playing) {
+      debugPrint('ERROR: Discard pile did not increase after playing card!');
+    }
+
+    _hasDrawnCard = false;
+    _lastDrawnCard = null;
+
+    // Check for UNO announcement (player has 1 card) - use sendEvent for immediate delivery
+    final player = _gameState!.getPlayerById(playerId);
+    if (player != null && player.hand.length == 1) {
+      _networkService.sendEvent(
+        MessageType.unoAnnounced,
+        {'playerId': playerId, 'playerName': player.name},
+      );
+    }
 
     // Check for winner
     if (_gameState!.phase == GamePhase.finished) {
       _handleGameWon();
     }
 
-    _broadcastGameState();
+    // Update DB and broadcast immediately (same as multi-card throwing)
+    final ssotState = _generateSSOTState();
+    _networkService.updateRemoteGameState(ssotState);
+    
+    // Use broadcastFullSnapshot for reliable updates (same as multi-card)
+    // This ensures all clients receive the complete state including discard pile
+    broadcastFullSnapshot(immediate: true);
+    
+    // CRITICAL: Host also needs to update UI immediately
     notifyListeners();
   }
 
@@ -651,7 +709,11 @@ class GameProvider extends ChangeNotifier {
         _gameState = GameLogic.passTurn(_gameState!);
       }
 
-      _broadcastGameState();
+      // Update DB and broadcast (same as multi-card)
+      _networkService.updateRemoteGameState(_generateSSOTState());
+      broadcastFullSnapshot(immediate: true);
+      
+      // Host updates UI immediately
       notifyListeners();
       return;
     }
@@ -660,7 +722,11 @@ class GameProvider extends ChangeNotifier {
     final result = GameLogic.drawCard(_gameState!, playerId);
     _gameState = result.state;
 
-    _broadcastGameState();
+    // Update DB and broadcast (same as multi-card)
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    broadcastFullSnapshot(immediate: true);
+    
+    // Host updates UI immediately
     notifyListeners();
   }
 
@@ -675,7 +741,12 @@ class GameProvider extends ChangeNotifier {
     }
 
     _gameState = GameLogic.passTurn(_gameState!);
-    _broadcastGameState();
+    
+    // Update DB and broadcast (same as multi-card)
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    broadcastFullSnapshot(immediate: true);
+    
+    // Host updates UI immediately
     notifyListeners();
   }
 
@@ -690,7 +761,16 @@ class GameProvider extends ChangeNotifier {
     // 1. Update DB status to 'finished' so all clients know game ended
     _networkService.updateRoomStatus('finished');
 
-    // 2. Send GAME_OVER message to all clients
+    // 2. Broadcast GAME_OVER_CELEBRATION event for synchronized animation (using sendEvent)
+    _networkService.sendEvent(
+      MessageType.gameOverCelebration,
+      {
+        'winnerId': _gameState!.winnerId,
+        'winnerName': _gameState!.winnerName,
+      },
+    );
+
+    // 3. Send GAME_OVER message to all clients (legacy support)
     _networkService.send(
       type: MessageType.gameOver,
       payload: {
@@ -699,13 +779,13 @@ class GameProvider extends ChangeNotifier {
       },
     );
 
-    // 3. Show winner animation
+    // 4. Show winner animation
     _showWinnerAnimation = true;
     _winnerAnimationName = _gameState?.winnerName ?? 'Unknown';
     _isWinnerAnimationForMe = _gameState?.winnerId == _myPlayerId;
     notifyListeners();
 
-    // 4. Start 20s auto-kick timer (Host only)
+    // 5. Start 20s auto-kick timer (Host only)
     if (_isHost) {
       _gameEndTimer?.cancel();
       _gameEndTimer = Timer(const Duration(seconds: 20), () {
@@ -807,7 +887,13 @@ class GameProvider extends ChangeNotifier {
     });
 
     if (_isHost) {
-      // Host calls directly
+      // Host: Broadcast UNO_ANNOUNCED event for synchronized animation
+      _networkService.send(
+        type: MessageType.unoAnnounced,
+        payload: {'playerId': _myPlayerId, 'playerName': _myName},
+      );
+
+      // Update state
       _gameState = _gameState?.copyWith(unoCaller: _myName);
       _broadcastGameState();
 
@@ -831,6 +917,102 @@ class GameProvider extends ChangeNotifier {
       // Client sends request
       _networkService.send(type: MessageType.unoCall);
     }
+  }
+
+  /// Handle WILD_COLOR_CHANGE event (Client & Host)
+  void _handleWildColorChange(GameMessage message) {
+    final colorIndex = message.payload['color'] as int?;
+    if (colorIndex != null && colorIndex >= 0 && colorIndex < UnoColor.values.length) {
+      _showWildAnimation = true;
+      notifyListeners();
+      // Animation will be cleared by UI after showing
+    }
+  }
+
+  /// Handle UNO_ANNOUNCED event (Client & Host)
+  void _handleUnoAnnounced(GameMessage message) {
+    final playerName = message.payload['playerName'] as String? ?? message.senderName;
+    _unoCallerName = playerName;
+    _showUnoCallAnimation = true;
+    notifyListeners();
+    
+    // Auto-hide after 3 seconds
+    _unoCallAnimationTimer?.cancel();
+    _unoCallAnimationTimer = Timer(const Duration(seconds: 3), () {
+      _showUnoCallAnimation = false;
+      notifyListeners();
+    });
+  }
+
+  /// Handle GAME_OVER_CELEBRATION event (Client & Host)
+  void _handleGameOverCelebration(GameMessage message) {
+    final winnerId = message.payload['winnerId'] as String?;
+    final winnerName = message.payload['winnerName'] as String? ?? 'Unknown';
+    
+    _showWinnerAnimation = true;
+    _winnerAnimationName = winnerName;
+    _isWinnerAnimationForMe = winnerId == _myPlayerId;
+    notifyListeners();
+  }
+
+  /// Handle HOST_LEFT event - Host left, kick all players
+  void _handleHostLeft(GameMessage message) {
+    debugPrint('HOST_LEFT: Host left the room, kicking all players...');
+    
+    // Set error to trigger navigation
+    _error = 'HOST_LEFT';
+    _kicked = true;
+    notifyListeners();
+    
+    // Leave room immediately
+    leaveRoom();
+  }
+
+  /// Handle HOST_RESIGNED event - Host resigned, new host will be selected
+  void _handleHostResigned(GameMessage message) {
+    // This is informational, actual host migration happens in _handleNewHostSelected
+    debugPrint('HOST_RESIGNED: Host resigned, waiting for new host selection...');
+  }
+
+  /// Handle NEW_HOST_SELECTED event - Update host and show notification
+  void _handleNewHostSelected(GameMessage message) {
+    final newHostId = message.payload['newHostId'] as String?;
+    final newHostName = message.payload['newHostName'] as String? ?? 'Unknown';
+    
+    if (newHostId == null) return;
+
+    debugPrint('NEW_HOST_SELECTED: New host is $newHostName ($newHostId)');
+
+    // Update game state with new host
+    if (_gameState != null) {
+      _gameState = _gameState!.copyWith(hostId: newHostId);
+      
+      // Update players to reflect new host
+      final updatedPlayers = _gameState!.players.map((p) {
+        return p.copyWith(isHost: p.id == newHostId);
+      }).toList();
+      _gameState = _gameState!.copyWith(players: updatedPlayers);
+
+      // If I am the new host, update local flag
+      if (newHostId == _myPlayerId) {
+        _isHost = true;
+        debugPrint('I am now the new host!');
+      }
+
+      notifyListeners();
+    }
+
+    // Store notification for UI to show toast
+    _error = 'NEW_HOST_SELECTED:$newHostName';
+    notifyListeners();
+    
+    // Clear error after a moment
+    Future.delayed(const Duration(seconds: 1), () {
+      if (_error == 'NEW_HOST_SELECTED:$newHostName') {
+        _error = null;
+        notifyListeners();
+      }
+    });
   }
 
   /// Throw multiple cards at once (for multi-card selection)
@@ -876,46 +1058,67 @@ class GameProvider extends ChangeNotifier {
     _startGame();
   }
 
-  void _startGame() {
+  Future<void> _startGame() async {
     // Re-sync local flag in case we are host via ID match
     _isHost = true;
 
     if (_gameState == null) return;
 
-    debugPrint(
-      'DEBUG: Host starting game with ${_gameState!.players.length} players',
-    );
+    debugPrint('DEBUG: Host starting game (Atomic Init)...');
 
-    // Initialize game (batched - one GAME_STATE with all cards dealt)
-    _gameState = GameLogic.initializeGame(_gameState!);
+    // Step A: Calculate Local State First (DO NOT touch global _gameState yet)
+    var localState = _gameState!.copyWith();
 
-    // CRITICAL: Mark game as started to prevent lobby reversion
-    _gameStarted = true;
+    // Initialize game logic (Generate Deck & Deal)
+    localState = GameLogic.initializeGame(localState);
 
-    // VALIDATION: Verify game state is properly populated before broadcasting
-    debugPrint(
-      'DEBUG: Initialized State - Deck: ${_gameState!.drawPile.length}, '
-      'Discard: ${_gameState!.discardPile.length}, '
-      'Players with hands: ${_gameState!.players.where((p) => p.hand.isNotEmpty).length}',
-    );
-
-    // Verify all players have 7 cards
-    for (final player in _gameState!.players) {
-      if (player.hand.length != 7) {
-        debugPrint(
-          'WARNING: Player ${player.name} has ${player.hand.length} cards instead of 7!',
-        );
-      }
+    // Step B: Validate
+    // User Request: Ensure deck is 108 cards (Uno standard)
+    if (localState.drawPile.isEmpty) {
+      debugPrint('CRITICAL ERROR: Deck generation failed (Empty)! Aborting.');
+      return;
     }
 
-    // CRITICAL: Push Initial Global State to Supabase DB (Atomically with Status)
-    // This solves the "Joiner sees empty deck" issue because status and state change together
-    debugPrint('DEBUG: Host pushing initial global state AND status to DB...');
-    _networkService.startRemoteGame(_gameState!.toJson());
+    // Warn if not 108 (might be custom deck logic, but log it)
+    if (localState.drawPile.length +
+            localState.players.fold(0, (sum, p) => sum + p.hand.length) !=
+        108) {
+      debugPrint(
+        'WARNING: Total cards in game is not 108. Proceeding with caution.',
+      );
+    }
+
+    // Verify all players have 7 cards
+    if (!localState.players.every((p) => p.hand.length == 7)) {
+      debugPrint(
+        'CRITICAL ERROR: Hand dealing failed (Not 7 cards)! Aborting.',
+      );
+      return;
+    }
+
+    // Prepare state for DB (Force Playing Status)
+    localState = localState.copyWith(phase: GamePhase.playing);
+
+    // Step C: Push to DB (Wait for completion)
+    debugPrint('DEBUG: Host pushing FULL ATOMIC STATE to Supabase DB...');
+    // Use SSOT format to ensure hands are included
+    final ssotState = _generateSSOTStateFromState(localState);
+    await _networkService.startRemoteGame(ssotState);
+
+    // Step D: Only AFTER DB write, update local state
+    _gameState = localState;
+    _gameStarted = true;
+
+    debugPrint(
+      'DEBUG: Atomic Init Success. Local State Updated. Broadcasting...',
+    );
 
     // Flag-based handshake: Send PREPARE_GAME and wait for ACK_READY
     _waitingForAcks = true;
     _ackReceivedFrom.clear();
+
+    // Trigger UI update
+    notifyListeners();
 
     debugPrint('DEBUG: Sending PREPARE_GAME to all clients');
     _sendPrepareGame();
@@ -929,13 +1132,8 @@ class GameProvider extends ChangeNotifier {
 
         // Use the new snapshot architecture
         broadcastFullSnapshot(immediate: true);
-
-        // Resume heartbeats after snapshot is sent
-        // _networkService.resumeHeartbeats(); // Removed for P2P
       }
     });
-
-    notifyListeners();
   }
 
   /// Send PREPARE_GAME message
@@ -1731,10 +1929,23 @@ class GameProvider extends ChangeNotifier {
   void _broadcastGameState() {
     if (_gameState == null) return;
 
-    // CRITICAL: Force phase to playing if game has started (prevent lobby reversion)
-    if (_gameStarted && _gameState!.phase == GamePhase.lobby) {
+    // SYNC PROTECTION: Never broadcast empty/invalid state
+    // BUT: Allow empty hands during initial game start (cards are being dealt)
+    if (_gameState!.drawPile.isEmpty &&
+        _gameState!.players.any((p) => p.hand.isEmpty) &&
+        _gameState!.phase == GamePhase.playing &&
+        _gameStarted) {
+      // Only block if game is actually playing and we have no cards
+      // During initial deal, hands might be empty temporarily
+      debugPrint('CRITICAL: Attempted to broadcast EMPTY state. Aborting.');
+      return;
+    }
+
+    // CRITICAL: Explicit check - if game has started, ALWAYS force playing phase
+    // This prevents ANY lobby reversion regardless of state mutations
+    if (_gameStarted && _gameState!.phase != GamePhase.playing) {
       debugPrint(
-        'DEBUG: Preventing lobby reversion - forcing phase to playing',
+        'DEBUG: CRITICAL - Game started but phase is ${_gameState!.phase}. Forcing to playing.',
       );
       _gameState = _gameState!.copyWith(phase: GamePhase.playing);
     }
@@ -1743,16 +1954,58 @@ class GameProvider extends ChangeNotifier {
     _prepareGameRetryTimer?.cancel();
     _waitingForAcks = false;
 
+    // Increment sequence number for this state update
     _lastStateSequence++;
 
     // Use compact JSON for reduced payload
+    final payload = _gameState!.toCompactJson();
+    
+    // CRITICAL: Verify hands are in players array before adding hands map
+    final handCounts = _gameState!.players.map((p) => '${p.name}:${p.hand.length}').join(', ');
+    debugPrint(
+      'DEBUG: Broadcasting state - Players: ${_gameState!.players.length}, Hands: $handCounts, DrawPile: ${_gameState!.drawPile.length}, DiscardPile: ${_gameState!.discardPile.length}',
+    );
+    
+    // CRITICAL: Verify discard pile is not empty in playing phase
+    if (_gameState!.discardPile.isEmpty && _gameState!.phase == GamePhase.playing && _gameStarted) {
+      debugPrint('WARNING: Discard pile is empty in playing phase!');
+    }
+    
+    // CRITICAL: Verify draw pile is not empty
+    if (_gameState!.drawPile.isEmpty && _gameState!.phase == GamePhase.playing && _gameStarted) {
+      debugPrint('WARNING: Draw pile is empty in playing phase!');
+    }
+    
+    // CRITICAL: Add hands map for SSOT (even in compact format)
+    // This ensures hands are available even if players array parsing fails
+    final Map<String, dynamic> hands = {};
+    for (final p in _gameState!.players) {
+      hands[p.id.toString()] = p.hand.map((c) => c.toJson()).toList();
+      if (p.hand.isEmpty && _gameState!.phase == GamePhase.playing && _gameStarted) {
+        debugPrint('WARNING: Player ${p.name} has empty hand in playing phase!');
+      }
+    }
+    payload['hands'] = hands;
+    
+    // Explicitly inject current_turn_id for robust client sync
+    payload['current_turn_id'] = _gameState!.currentPlayer?.id;
+
+    // CRITICAL: Explicitly inject phase to prevent flicker
+    if (_gameStarted) {
+      payload['h'] =
+          GamePhase.playing.index; // 'h' is the compact key for phase
+      payload['phase'] =
+          GamePhase.playing.name; // Redundant safety for regular JSON parsers
+    }
+    // CRITICAL: Inject sequence number for discard pile keying
+    payload['stateSeq'] = _lastStateSequence;
+    payload['sequenceNumber'] = _lastStateSequence; // Redundant for compatibility
+    payload['compact'] = true;
+
     _networkService.send(
       type: MessageType.gameState,
-      payload: {
-        'state': _gameState!.toCompactJson(),
-        'stateSeq': _lastStateSequence,
-        'compact': true,
-      },
+      payload: payload,
+      sequenceNumber: _lastStateSequence,
     );
 
     debugPrint(
@@ -1802,8 +2055,8 @@ class GameProvider extends ChangeNotifier {
   // === CLIENT LOGIC ===
 
   void _handleGameState(GameMessage message) {
-    // Host ignores (uses local state)
-    if (_isHost) return;
+    // Host now also processes broadcasts to ensure synchronized updates
+    // This ensures host sees discard pile updates at the same time as clients
 
     try {
       final stateSeq = message.payload['stateSeq'] as int? ?? 0;
@@ -1817,10 +2070,18 @@ class GameProvider extends ChangeNotifier {
         // Continue processing this state anyway (it's still valid)
       }
 
-      // Only accept newer states
-      if (stateSeq < _lastStateSequence) return;
-
-      _lastStateSequence = stateSeq;
+      // Only accept newer or equal states (host processes their own broadcasts)
+      // For host: Allow processing their own broadcasts to sync UI
+      // For client: Only accept newer states
+      if (!_isHost && stateSeq < _lastStateSequence) {
+        debugPrint('DEBUG: Ignoring older state (seq=$stateSeq < $_lastStateSequence)');
+        return;
+      }
+      
+      // Update sequence (host may process same sequence from their own broadcast)
+      if (stateSeq > _lastStateSequence) {
+        _lastStateSequence = stateSeq;
+      }
 
       // FIX: Handle flattened state (from Supabase optimization) vs nested state (direct)
       final rawState = message.payload['state'];
@@ -1830,6 +2091,12 @@ class GameProvider extends ChangeNotifier {
               : message.payload; // Fallback to using payload as state
 
       final isCompact = message.payload['compact'] as bool? ?? false;
+      
+      // DEBUG: Log what we're receiving
+      final stateMap = stateJson as Map<String, dynamic>;
+      final discardCount = (stateMap['x'] as List?)?.length ?? (stateMap['discardPile'] as List?)?.length ?? 0;
+      final drawCount = (stateMap['d'] as List?)?.length ?? (stateMap['drawPile'] as List?)?.length ?? 0;
+      debugPrint('DEBUG: Parsing state - discardPile: $discardCount, drawPile: $drawCount (compact: $isCompact)');
 
       var newState =
           isCompact
@@ -1853,54 +2120,109 @@ class GameProvider extends ChangeNotifier {
         }
       }
 
+      // CRITICAL: Turn Sync via ID
+      // If host sent current_turn_id, allow it to override the index
+      final currentTurnId = message.payload['current_turn_id'] as String?;
+      if (currentTurnId != null) {
+        final playerIndex = newState.getPlayerIndex(currentTurnId);
+        if (playerIndex != -1 && playerIndex != newState.currentPlayerIndex) {
+          debugPrint(
+            'DEBUG: Fixing turn sync. Host says turn is $currentTurnId (index $playerIndex)',
+          );
+          newState = newState.copyWith(currentPlayerIndex: playerIndex);
+        }
+      }
+
       // EXPLICIT HAND PARSING (SSOT Safety)
-      // Even though Service attempts to map, we double-check here to guarantee cards show up.
+      // Check for hands in both the payload directly and nested game_state
       try {
-        final rawGameState =
-            message.payload['game_state']
-                as Map<String, dynamic>?; // Access raw JSON from DB
-        if (rawGameState != null && rawGameState['hands'] != null) {
-          final handsMap = rawGameState['hands'] as Map<String, dynamic>;
-          final myHandList = handsMap[_myPlayerId.toString()] as List<dynamic>?;
+        // First check payload directly (for compact format broadcasts)
+        final handsMap = message.payload['hands'] as Map<String, dynamic>?;
+        
+        // If not found, check nested game_state (for DB format)
+        final rawGameState = message.payload['game_state'] as Map<String, dynamic>?;
+        final finalHandsMap = handsMap ?? rawGameState?['hands'] as Map<String, dynamic>?;
+        
+        if (finalHandsMap != null && finalHandsMap.isNotEmpty) {
+          // Update all players' hands from SSOT
+          // CRITICAL: Don't clear local hand if incoming hand is empty (preserve existing)
+          final updatedPlayers = newState.players.map((p) {
+            final playerHandList = finalHandsMap[p.id.toString()] as List<dynamic>?;
+            if (playerHandList != null && playerHandList.isNotEmpty) {
+              // Only update if incoming hand is not empty
+              final playerCards = playerHandList
+                  .map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
+                  .toList();
+              return p.copyWith(hand: playerCards);
+            } else if (playerHandList != null && playerHandList.isEmpty) {
+              // Incoming hand is empty - preserve local hand if it exists
+              final localPlayer = _gameState?.getPlayerById(p.id);
+              if (localPlayer != null && localPlayer.hand.isNotEmpty) {
+                debugPrint('DEBUG: Preserving local hand for ${p.name} (incoming was empty)');
+                return p.copyWith(hand: localPlayer.hand);
+              }
+            }
+            return p;
+          }).toList();
 
-          if (myHandList != null) {
-            final myCards = myHandList.map((c) => UnoCard.fromJson(c)).toList();
-
-            // Patch the player in the new state
-            final updatedPlayers =
-                newState.players.map((p) {
-                  if (p.id == _myPlayerId) {
-                    return p.copyWith(hand: myCards);
-                  }
-                  return p;
-                }).toList();
-
+          newState = newState.copyWith(players: updatedPlayers);
+          debugPrint(
+            'DEBUG: Patched hands from SSOT. My hand: ${newState.getPlayerById(_myPlayerId)?.hand.length ?? 0} cards',
+          );
+        } else {
+          // If no hands map, preserve local hands if incoming is empty
+          final myLocalHand = _gameState?.getPlayerById(_myPlayerId)?.hand ?? [];
+          final myIncomingHand = newState.getPlayerById(_myPlayerId)?.hand ?? [];
+          
+          if (myIncomingHand.isEmpty && myLocalHand.isNotEmpty) {
+            debugPrint('DEBUG: Preserving local hand (no hands map, incoming empty)');
+            final updatedPlayers = newState.players.map((p) {
+              if (p.id == _myPlayerId) {
+                return p.copyWith(hand: myLocalHand);
+              }
+              return p;
+            }).toList();
             newState = newState.copyWith(players: updatedPlayers);
-            debugPrint(
-              'DEBUG: Explicitly patched my hand with ${myCards.length} cards from SSOT.',
-            );
+          }
+          
+          final myHandSize = newState.getPlayerById(_myPlayerId)?.hand.length ?? 0;
+          debugPrint(
+            'DEBUG: No hands map found, using hands from players array. My hand: $myHandSize cards',
+          );
+          if (myHandSize == 0 && _gameState?.phase == GamePhase.playing && _gameStarted) {
+            debugPrint('WARNING: My hand is empty but game is playing!');
           }
         }
       } catch (e) {
-        debugPrint('DEBUG: Failed to explicit parse hands: $e');
+        debugPrint('DEBUG: Failed to parse hands: $e');
       }
 
       // CRITICAL FIX: Merge Logic for Players & HostId
       // 1. If payload has no players (common in relational schema), keep existing players
       if (newState.players.isEmpty && _gameState?.players.isNotEmpty == true) {
+        debugPrint('WARNING: Received empty players array, preserving existing players');
         newState = newState.copyWith(players: _gameState!.players);
       }
 
       // 2. Guard: Don't shrink player list unexpectedly (stream hiccup protection)
+      // BUT: In lobby phase, always accept the new player count from host (for proper sync)
       final currentCount = _gameState?.players.length ?? 0;
       if (newState.players.length < currentCount &&
           currentCount > 0 &&
-          newState.phase == GamePhase.lobby) {
+          newState.phase == GamePhase.lobby &&
+          !_isHost) {
+        // Only ignore if we're a client and the count shrinks unexpectedly
+        // This prevents clients from seeing wrong player counts during lobby
         debugPrint(
-          'DEBUG: Ignoring game state with smaller player count ($currentCount -> ${newState.players.length}).',
+          'DEBUG: Ignoring game state with smaller player count ($currentCount -> ${newState.players.length}) in lobby.',
         );
         // Still update other fields, but preserve players
         newState = newState.copyWith(players: _gameState!.players);
+      } else if (newState.players.length > currentCount || 
+                 (newState.phase == GamePhase.lobby && newState.players.length == currentCount && newState.players.isNotEmpty)) {
+        // Accept new players if count increases or if we're in lobby and have valid players
+        // This ensures clients see all players in lobby
+        debugPrint('DEBUG: Accepting player update: ${currentCount} -> ${newState.players.length}');
       }
 
       // 2. Ensure hostId is preserved/updated
@@ -1933,6 +2255,26 @@ class GameProvider extends ChangeNotifier {
       if (newState.phase == GamePhase.playing) {
         _isPreparingGame = false;
         debugPrint('DEBUG: Game state received - clearing isPreparingGame');
+      }
+
+      // CRITICAL: Only preserve discardPile/drawPile if we're in lobby phase or if the new state is clearly wrong
+      // In playing phase, always trust the new state (it should have the correct discard pile)
+      // Only preserve if we're transitioning from lobby to playing and the new state is missing data
+      if (newState.phase == GamePhase.playing && 
+          _gameState?.phase == GamePhase.lobby &&
+          newState.discardPile.isEmpty && 
+          _gameState?.discardPile.isNotEmpty == true) {
+        debugPrint('WARNING: Transitioning to playing with empty discard pile, preserving existing');
+        newState = newState.copyWith(discardPile: _gameState!.discardPile);
+      }
+      
+      // For draw pile, only preserve if transitioning from lobby
+      if (newState.phase == GamePhase.playing && 
+          _gameState?.phase == GamePhase.lobby &&
+          newState.drawPile.isEmpty && 
+          _gameState?.drawPile.isNotEmpty == true) {
+        debugPrint('WARNING: Transitioning to playing with empty draw pile, preserving existing');
+        newState = newState.copyWith(drawPile: _gameState!.drawPile);
       }
 
       _gameState = newState;
@@ -2017,11 +2359,13 @@ class GameProvider extends ChangeNotifier {
 
     _gameEndTimer?.cancel();
 
-    debugPrint('Host leaving lobby - deleting room ${_gameState!.roomCode}');
+    debugPrint('Host leaving lobby - resetting status and deleting room ${_gameState!.roomCode}');
+    
+    // Reset status to 'lobby' before deleting (helps with cleanup)
+    await _networkService.updateRoomStatus('lobby');
+    
     await _networkService.deleteRoom(_gameState!.roomCode);
-
-    // Leave room after deletion
-    leaveRoom();
+    // Note: Don't call leaveRoom() here to avoid recursion
   }
 
   /// Resign from the current game
@@ -2114,21 +2458,26 @@ class GameProvider extends ChangeNotifier {
   /// Generate Single Source of Truth state for DB
   Map<String, dynamic> _generateSSOTState() {
     if (_gameState == null) return {};
+    return _generateSSOTStateFromState(_gameState!);
+  }
 
-    final stateJson = _gameState!.toJson();
+  /// Generate SSOT state from a given GameState (helper for initialization)
+  Map<String, dynamic> _generateSSOTStateFromState(GameState state) {
+    // Use compact JSON for consistency with broadcasts
+    final stateJson = state.toCompactJson();
     final Map<String, dynamic> hands = {};
 
-    // Extract hands for SSOT
-    for (final p in _gameState!.players) {
-      if (p.hand.isNotEmpty) {
-        hands[p.id.toString()] = p.hand.map((c) => c.toJson()).toList();
-      }
+    // Extract hands for SSOT (always include, even if empty, for consistency)
+    for (final p in state.players) {
+      hands[p.id.toString()] = p.hand.map((c) => c.toJson()).toList();
     }
 
+    // Add hands map to compact JSON
     stateJson['hands'] = hands;
-    // We can leave hands in players list as backup, or strip them to save bandwidth.
-    // User requested hands map, so we ensure it's there.
-
+    
+    // Ensure hands are also in players array (compact format uses 'h' key)
+    // This is already done by toCompactJson(), but we verify it's there
+    
     return stateJson;
   }
 
@@ -2146,76 +2495,35 @@ class GameProvider extends ChangeNotifier {
       return;
     }
 
-    if (_isHost) {
-      _gameState = GameLogic.applyCardEffect(
-        state: _gameState!,
-        card: card,
-        playerId: _myPlayerId,
-        chosenColor: chosenColor,
-      );
-      _hasDrawnCard = false;
-      _lastDrawnCard = null;
-
-      if (_gameState!.phase == GamePhase.finished) {
-        _handleGameWon();
-      }
-
-      // SSOT Update: Push to DB
-      // Optimistic UI: Update local first
-      notifyListeners();
-      _networkService.updateRemoteGameState(_generateSSOTState());
-
-      // Keep ephemeral for animations if needed
-      _broadcastGameState();
-    } else {
-      _networkService.send(
-        type: MessageType.moveAttempt,
-        payload: {
-          'card': card.toCompactJson(),
-          if (chosenColor != null)
-            'chosenColor': chosenColor.toJson(), // Use safe toJson
-        },
-      );
-    }
+    // Both Host and Client send MOVE_ATTEMPT for synchronized updates
+    // Host processes their own MOVE_ATTEMPT in _handleMoveAttempt
+    _networkService.send(
+      type: MessageType.moveAttempt,
+      payload: {
+        'card': card.toCompactJson(),
+        if (chosenColor != null) 'chosenColor': chosenColor.toJson(),
+      },
+    );
   }
 
   /// Draw a card
   void drawCard() {
     if (_gameState == null || !isMyTurn || _hasDrawnCard) return;
 
-    if (_isHost) {
-      final result = GameLogic.drawCard(_gameState!, _myPlayerId);
-      _lastDrawnCard = result.drawnCard;
-      _hasDrawnCard = true;
-
-      // SSOT Update
-      _networkService.updateRemoteGameState(_generateSSOTState());
-      _broadcastGameState();
-      // notifyListeners(); // Relies on stream echo
-    } else {
-      _networkService.send(type: MessageType.drawRequest);
-      _hasDrawnCard = true;
-      notifyListeners();
-    }
+    // Both Host and Client send DRAW_REQUEST for synchronized updates
+    _networkService.send(type: MessageType.drawRequest);
+    _hasDrawnCard = true;
+    notifyListeners();
   }
 
   /// Pass turn
   void passTurn() {
     if (_gameState == null || !isMyTurn) return;
 
-    if (_isHost) {
-      _hasDrawnCard = false;
-      _lastDrawnCard = null;
-
-      // SSOT Update
-      _networkService.updateRemoteGameState(_generateSSOTState());
-      _broadcastGameState();
-      // notifyListeners(); // Relies on stream echo
-    } else {
-      _networkService.send(type: MessageType.passTurn);
-      _hasDrawnCard = false;
-      _lastDrawnCard = null;
-    }
+    // Both Host and Client send PASS_TURN for synchronized updates
+    _networkService.send(type: MessageType.passTurn);
+    _hasDrawnCard = false;
+    _lastDrawnCard = null;
   }
 
   /// Resign from the game
@@ -2223,14 +2531,91 @@ class GameProvider extends ChangeNotifier {
     if (_gameState == null) return;
 
     if (_isHost) {
-      _kickPlayer(_myPlayerId);
-      if (_gameState!.players.isEmpty) {
-        await leaveRoom();
-      }
+      // Host resigning: Select new host randomly and notify all players
+      _handleHostResignation();
     } else {
       _networkService.send(type: MessageType.playerResign);
       await leaveRoom();
     }
+  }
+
+  /// Handle host resignation - select new host randomly
+  void _handleHostResignation() {
+    if (!_isHost || _gameState == null) return;
+    if (_gameState!.players.length <= 1) {
+      // Only host left, just leave
+      leaveRoom();
+      return;
+    }
+
+    // Get remaining players (excluding current host)
+    final remainingPlayers = _gameState!.players
+        .where((p) => p.id != _myPlayerId)
+        .toList();
+    
+    if (remainingPlayers.isEmpty) {
+      leaveRoom();
+      return;
+    }
+
+    // Randomly select new host
+    final random = DateTime.now().millisecondsSinceEpoch % remainingPlayers.length;
+    final newHost = remainingPlayers[random];
+
+    debugPrint('Host resigning: Selecting ${newHost.name} as new host');
+
+    // Update game state with new host
+    _gameState = _gameState!.copyWith(hostId: newHost.id);
+    
+    // Update players to reflect new host
+    final updatedPlayers = _gameState!.players.map((p) {
+      return p.copyWith(isHost: p.id == newHost.id);
+    }).toList();
+    _gameState = _gameState!.copyWith(players: updatedPlayers);
+
+    // Return host's cards to deck if game is playing
+    if (_gameState!.phase == GamePhase.playing) {
+      final hostPlayer = _gameState!.getPlayerById(_myPlayerId);
+      if (hostPlayer != null) {
+        _gameState!.drawPile.addAll(hostPlayer.hand);
+        _gameState!.drawPile.shuffle();
+      }
+    }
+
+    // Remove host from players list
+    _gameState = _gameState!.removePlayer(_myPlayerId);
+
+    // Update current turn index if needed
+    if (_gameState!.currentPlayerIndex >= _gameState!.players.length) {
+      _gameState = _gameState!.copyWith(currentPlayerIndex: 0);
+    }
+
+    // Broadcast host resignation event
+    _networkService.send(
+      type: MessageType.hostResigned,
+      payload: {
+        'oldHostId': _myPlayerId,
+        'oldHostName': _myName,
+        'newHostId': newHost.id,
+        'newHostName': newHost.name,
+      },
+    );
+
+    // Broadcast new host selected notification
+    _networkService.send(
+      type: MessageType.newHostSelected,
+      payload: {
+        'newHostId': newHost.id,
+        'newHostName': newHost.name,
+      },
+    );
+
+    // Broadcast updated game state
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    _broadcastGameState();
+
+    // Host leaves after migration
+    leaveRoom();
   }
 
   /// Check if a card can be played
@@ -2249,15 +2634,53 @@ class GameProvider extends ChangeNotifier {
       'GameProvider: leaveRoom called! StackTrace: ${StackTrace.current}',
     ); // Added StackTrace
 
-    // If Host leaves, RUN SAFE CLEANUP (Handover or Delete)
-    if (_isHost) {
-      await cleanupRoom();
+    // If Host leaves (not resigning), kick all players and delete room
+    if (_isHost && _gameState != null) {
+      debugPrint('HOST: Leaving room - kicking all players and deleting room...');
+      
+      // 1. Broadcast HOST_LEFT to kick all players (ephemeral broadcast)
+      try {
+        await _networkService.send(
+          type: MessageType.hostLeft,
+          payload: {
+            'hostId': _myPlayerId,
+            'hostName': _myName,
+          },
+        );
+        debugPrint('HOST: HOST_LEFT broadcast sent');
+      } catch (e) {
+        debugPrint('HOST: Failed to send HOST_LEFT broadcast: $e');
+      }
+
+      // 2. Wait for broadcast to be sent
+      await Future.delayed(const Duration(milliseconds: 1000));
+
+      // 3. Reset status and delete room from DB (CRITICAL: Must delete before leaving)
+      _gameEndTimer?.cancel();
+      final roomCode = _gameState!.roomCode;
+      debugPrint('HOST: Resetting status and deleting room $roomCode from backend...');
+      
+      // Reset status to 'lobby' before deleting (helps with cleanup)
+      await _networkService.updateRoomStatus('lobby');
+      
+      await _networkService.deleteRoom(roomCode);
+      debugPrint('HOST: Room deleted successfully');
+      
+      // 4. Set error flag for host to trigger navigation in UI
+      _error = 'HOST_LEFT'; // Same flag as clients receive
     } else {
       // CLIENT LOGIC:
       // Always remove self from DB
       await _networkService.removeSelfFromRoom();
 
       // Clients just leave, never delete.
+    }
+
+    if (_kicked) {
+      _error = 'The host has closed the room.';
+    } else if (_error == null && !_isHost) {
+      // Only clear error for clients if not already set
+      _error = null;
     }
 
     _syncTimer?.cancel();
@@ -2275,7 +2698,8 @@ class GameProvider extends ChangeNotifier {
     _showWinnerAnimation = false;
     _winnerAnimationName = null;
     _isWinnerAnimationForMe = false;
-    _error = null;
+    // _kicked = false; // Keep kicked true until next join? No, reset it on join.
+    // _error is kept so UI can show it
     notifyListeners();
   }
 
