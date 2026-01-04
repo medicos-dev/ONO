@@ -14,6 +14,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class GameProvider extends ChangeNotifier {
   final SupabaseUnoService _networkService = SupabaseUnoService();
   final String _myPlayerId = const Uuid().v4();
+  String? _currentRoomCode; // Track current room code for sync operations
 
   GameState? _gameState;
   String _myName = '';
@@ -201,6 +202,7 @@ class GameProvider extends ChangeNotifier {
     _myName = playerName;
     _isHost = true;
     _isConnecting = true;
+    _currentRoomCode = roomCode; // Store room code for sync operations
     notifyListeners();
 
     debugPrint('DEBUG: Host creating room $roomCode as $playerName');
@@ -249,6 +251,7 @@ class GameProvider extends ChangeNotifier {
     _myName = playerName;
     _isHost = false;
     _isConnecting = true;
+    _currentRoomCode = roomCode; // Store room code for sync operations
     notifyListeners();
 
     debugPrint('DEBUG: Client joining room $roomCode as $playerName');
@@ -576,26 +579,50 @@ class GameProvider extends ChangeNotifier {
 
     // Check if player already exists
     if (_gameState!.getPlayerById(playerId) != null) {
-      debugPrint('DEBUG: Player already in list, broadcasting current state');
+      debugPrint('DEBUG: Player already in list, syncing and broadcasting state');
+      // Sync players from database to ensure consistency
+      _syncPlayersFromDatabase();
       _broadcastGameState();
       return;
     }
 
-    // Add new player
+    // Add new player to local state
     final newPlayer = Player(id: playerId, name: playerName, isHost: false);
-
     _gameState = _gameState!.addPlayer(newPlayer);
 
     debugPrint(
       'DEBUG: Host added player $playerName, now ${_gameState!.players.length} players',
     );
+
+    // CRITICAL: Update database FIRST to ensure room_players and game_state are synced
+    // This ensures the stream picks up the new player immediately
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    
     debugPrint(
-      'DEBUG: Host broadcasting GAME_STATE after adding player (priority)',
+      'DEBUG: Host updated database, now syncing players and broadcasting',
     );
 
-    // Immediately broadcast with priority
+    // Sync players from database to ensure consistency
+    _syncPlayersFromDatabase();
+    
+    // Then broadcast the updated state
     _broadcastGameState();
     notifyListeners();
+  }
+
+  /// Sync players from database to local state (ensures consistency)
+  Future<void> _syncPlayersFromDatabase() async {
+    if (!_isHost || _currentRoomCode == null) return;
+    
+    try {
+      // Use RPC to sync players from room_players to game_state
+      await _networkService.syncPlayersToGameState(_currentRoomCode!);
+      
+      // Request a fresh state update to get the synced players
+      await _networkService.requestSync();
+    } catch (e) {
+      debugPrint('DEBUG: Failed to sync players from database: $e');
+    }
   }
 
   void _handleMoveAttempt(GameMessage message) {
@@ -639,31 +666,168 @@ class GameProvider extends ChangeNotifier {
       );
     }
 
-    // Apply move (host processes their own moves here too)
-    final previousDiscardCount = _gameState!.discardPile.length;
-    _gameState = GameLogic.applyCardEffect(
-      state: _gameState!,
-      card: card,
-      playerId: playerId,
-      chosenColor: chosenColor,
-    );
+    // Apply move (exactly like multi-card for consistency)
+    // Find the player
+    final playerIndex = _gameState!.getPlayerIndex(playerId);
+    if (playerIndex == -1) return;
+
+    final player = _gameState!.players[playerIndex];
     
-    // DEBUG: Verify discard pile was updated
-    final newDiscardCount = _gameState!.discardPile.length;
-    debugPrint('DEBUG: Card played - Discard pile: $previousDiscardCount -> $newDiscardCount');
-    if (newDiscardCount <= previousDiscardCount && _gameState!.phase == GamePhase.playing) {
-      debugPrint('ERROR: Discard pile did not increase after playing card!');
+    // Remove card from player's hand
+    final updatedPlayer = player.removeCard(card.id);
+    
+    // Add card to discard pile (exactly like multi-card)
+    List<UnoCard> newDiscardPile = [..._gameState!.discardPile, card];
+    
+    // Update players list
+    List<Player> updatedPlayers = List.from(_gameState!.players);
+    updatedPlayers[playerIndex] = updatedPlayer;
+    
+    // Calculate effects based on card type (exactly like multi-card)
+    int nextIndex = playerIndex;
+    bool newDirection = _gameState!.isClockwise;
+    int cardsToDraw = 0;
+    UnoColor? newActiveColor = chosenColor ?? card.color;
+    
+    switch (card.type) {
+      case UnoCardType.number:
+        nextIndex = GameLogic.getNextPlayerIndex(
+          playerIndex,
+          _gameState!.players.length,
+          _gameState!.isClockwise,
+        );
+        newActiveColor = null;
+        break;
+        
+      case UnoCardType.skip:
+        nextIndex = GameLogic.getNextPlayerIndex(
+          playerIndex,
+          _gameState!.players.length,
+          _gameState!.isClockwise,
+          skip: 2,
+        );
+        newActiveColor = null;
+        break;
+        
+      case UnoCardType.reverse:
+        newDirection = !_gameState!.isClockwise;
+        if (_gameState!.players.length == 2) {
+          nextIndex = GameLogic.getNextPlayerIndex(
+            playerIndex,
+            _gameState!.players.length,
+            newDirection,
+            skip: 2,
+          );
+        } else {
+          nextIndex = GameLogic.getNextPlayerIndex(
+            playerIndex,
+            _gameState!.players.length,
+            newDirection,
+          );
+        }
+        newActiveColor = null;
+        break;
+        
+      case UnoCardType.drawTwo:
+        nextIndex = GameLogic.getNextPlayerIndex(
+          playerIndex,
+          _gameState!.players.length,
+          _gameState!.isClockwise,
+        );
+        cardsToDraw = 2;
+        newActiveColor = null;
+        break;
+        
+      case UnoCardType.wild:
+        nextIndex = GameLogic.getNextPlayerIndex(
+          playerIndex,
+          _gameState!.players.length,
+          _gameState!.isClockwise,
+        );
+        break;
+        
+      case UnoCardType.wildDrawFour:
+        nextIndex = GameLogic.getNextPlayerIndex(
+          playerIndex,
+          _gameState!.players.length,
+          _gameState!.isClockwise,
+        );
+        cardsToDraw = 4;
+        break;
+    }
+    
+    // Apply draw penalty to next player (for Draw 2/Draw 4)
+    if (cardsToDraw > 0) {
+      final nextPlayer = updatedPlayers[nextIndex];
+      var penalizedPlayer = nextPlayer;
+      var drawPile = List<UnoCard>.from(_gameState!.drawPile);
+      
+      for (int i = 0; i < cardsToDraw && drawPile.isNotEmpty; i++) {
+        final drawnCard = drawPile.removeLast();
+        penalizedPlayer = penalizedPlayer.addCard(drawnCard);
+      }
+      
+      updatedPlayers[nextIndex] = penalizedPlayer;
+      _gameState = _gameState!.copyWith(drawPile: drawPile);
+    }
+    
+    // Check for winner
+    if (updatedPlayer.hasWon) {
+      _gameState = _gameState!.copyWith(
+        players: updatedPlayers,
+        discardPile: newDiscardPile,
+        phase: GamePhase.finished,
+        winnerId: playerId,
+        winnerName: player.name,
+        activeColor: newActiveColor,
+        currentPlayerIndex: nextIndex,
+        isClockwise: newDirection,
+      );
+    } else {
+      // UNO PENALTY CHECK (exactly like multi-card)
+      if (updatedPlayer.hand.length == 1) {
+        if (!_playersWhoCalledUno.contains(playerId)) {
+          var drawPile = List<UnoCard>.from(_gameState!.drawPile);
+          var penaltyPlayer = updatedPlayer;
+          
+          for (int i = 0; i < 2 && drawPile.isNotEmpty; i++) {
+            final drawnCard = drawPile.removeLast();
+            penaltyPlayer = penaltyPlayer.addCard(drawnCard);
+          }
+          
+          updatedPlayers[playerIndex] = penaltyPlayer;
+          _gameState = _gameState!.copyWith(drawPile: drawPile);
+          
+          _networkService.send(
+            type: MessageType.notification,
+            payload: {'message': '${player.name} forgot UNO! Drawn 2 cards.'},
+          );
+        }
+      }
+      if (updatedPlayer.hand.length != 1) {
+        _playersWhoCalledUno.remove(playerId);
+      }
+      
+      // Update state (exactly like multi-card)
+      _gameState = _gameState!.copyWith(
+        players: updatedPlayers,
+        discardPile: newDiscardPile,
+        currentPlayerIndex: nextIndex,
+        activeColor: newActiveColor,
+        isClockwise: newDirection,
+        pendingDraws: cardsToDraw > 0 ? cardsToDraw : null,
+        clearActiveColor: newActiveColor == null,
+      );
     }
 
     _hasDrawnCard = false;
     _lastDrawnCard = null;
 
-    // Check for UNO announcement (player has 1 card) - use sendEvent for immediate delivery
-    final player = _gameState!.getPlayerById(playerId);
-    if (player != null && player.hand.length == 1) {
+    // Check for UNO announcement (exactly like multi-card)
+    if (updatedPlayer.hand.length == 1) {
       _networkService.sendEvent(
         MessageType.unoAnnounced,
-        {'playerId': playerId, 'playerName': player.name},
+        {'playerId': playerId, 'playerName': updatedPlayer.name},
       );
     }
 
@@ -672,15 +836,10 @@ class GameProvider extends ChangeNotifier {
       _handleGameWon();
     }
 
-    // Update DB and broadcast immediately (same as multi-card throwing)
-    final ssotState = _generateSSOTState();
-    _networkService.updateRemoteGameState(ssotState);
+    // Update DB and broadcast immediately (exactly like multi-card)
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    _broadcastGameState();
     
-    // Use broadcastFullSnapshot for reliable updates (same as multi-card)
-    // This ensures all clients receive the complete state including discard pile
-    broadcastFullSnapshot(immediate: true);
-    
-    // CRITICAL: Host also needs to update UI immediately
     notifyListeners();
   }
 
@@ -711,7 +870,9 @@ class GameProvider extends ChangeNotifier {
 
       // Update DB and broadcast (same as multi-card)
       _networkService.updateRemoteGameState(_generateSSOTState());
-      broadcastFullSnapshot(immediate: true);
+      // Update DB and broadcast immediately
+      _networkService.updateRemoteGameState(_generateSSOTState());
+      _broadcastGameState();
       
       // Host updates UI immediately
       notifyListeners();
@@ -722,9 +883,9 @@ class GameProvider extends ChangeNotifier {
     final result = GameLogic.drawCard(_gameState!, playerId);
     _gameState = result.state;
 
-    // Update DB and broadcast (same as multi-card)
+    // Update DB and broadcast immediately (simplified for lower latency)
     _networkService.updateRemoteGameState(_generateSSOTState());
-    broadcastFullSnapshot(immediate: true);
+    _broadcastGameState();
     
     // Host updates UI immediately
     notifyListeners();
@@ -742,9 +903,9 @@ class GameProvider extends ChangeNotifier {
 
     _gameState = GameLogic.passTurn(_gameState!);
     
-    // Update DB and broadcast (same as multi-card)
+    // Update DB and broadcast immediately (simplified for lower latency)
     _networkService.updateRemoteGameState(_generateSSOTState());
-    broadcastFullSnapshot(immediate: true);
+    _broadcastGameState();
     
     // Host updates UI immediately
     notifyListeners();
@@ -959,13 +1120,15 @@ class GameProvider extends ChangeNotifier {
   void _handleHostLeft(GameMessage message) {
     debugPrint('HOST_LEFT: Host left the room, kicking all players...');
     
-    // Set error to trigger navigation
+    // Set error to trigger navigation (CRITICAL: Must be set before leaveRoom)
     _error = 'HOST_LEFT';
     _kicked = true;
     notifyListeners();
     
-    // Leave room immediately
-    leaveRoom();
+    // CRITICAL: Call leaveRoom in a microtask to ensure error is set first
+    Future.microtask(() async {
+      await leaveRoom();
+    });
   }
 
   /// Handle HOST_RESIGNED event - Host resigned, new host will be selected
@@ -1785,9 +1948,10 @@ class GameProvider extends ChangeNotifier {
       updatedPlayer = updatedPlayer.removeCard(card.id);
     }
 
-    // Add only the last card to discard pile (its color becomes active)
+    // Add ALL cards to discard pile (for history display)
+    // The last card's color becomes active, but all cards should be visible in history
     final lastCard = cardsToPlay.last;
-    List<UnoCard> newDiscardPile = [..._gameState!.discardPile, lastCard];
+    List<UnoCard> newDiscardPile = [..._gameState!.discardPile, ...cardsToPlay];
 
     // Update players list
     List<Player> updatedPlayers = List.from(_gameState!.players);
@@ -1917,8 +2081,9 @@ class GameProvider extends ChangeNotifier {
       });
     }
 
-    // Broadcast immediately so everyone sees the animation
-    broadcastFullSnapshot(immediate: true);
+    // Broadcast immediately so everyone sees the update (simplified for lower latency)
+    _networkService.updateRemoteGameState(_generateSSOTState());
+    _broadcastGameState();
 
     debugPrint(
       'DEBUG: Multi-throw processed (${cardsToPlay.length} cards), broadcasting snapshot',
@@ -1960,16 +2125,24 @@ class GameProvider extends ChangeNotifier {
     // Use compact JSON for reduced payload
     final payload = _gameState!.toCompactJson();
     
+    // CRITICAL: Ensure discard pile is explicitly included (even if empty)
+    // This prevents discard pile from being lost during serialization
+    if (_gameState!.discardPile.isNotEmpty) {
+      payload['x'] = _gameState!.discardPile.map((c) => c.toCompactJson()).toList();
+      payload['discardPile'] = _gameState!.discardPile.map((c) => c.toJson()).toList();
+      debugPrint('DEBUG: Explicitly including discard pile (${_gameState!.discardPile.length} cards) in broadcast');
+    } else {
+      // Even if empty, ensure the key exists
+      payload['x'] = [];
+      payload['discardPile'] = [];
+    }
+    
     // CRITICAL: Verify hands are in players array before adding hands map
     final handCounts = _gameState!.players.map((p) => '${p.name}:${p.hand.length}').join(', ');
     debugPrint(
-      'DEBUG: Broadcasting state - Players: ${_gameState!.players.length}, Hands: $handCounts, DrawPile: ${_gameState!.drawPile.length}, DiscardPile: ${_gameState!.discardPile.length}',
+      'DEBUG: Broadcasting state (seq=$_lastStateSequence) - Players: ${_gameState!.players.length}, Hands: $handCounts, DrawPile: ${_gameState!.drawPile.length}, DiscardPile: ${_gameState!.discardPile.length}',
     );
     
-    // CRITICAL: Verify discard pile is not empty in playing phase
-    if (_gameState!.discardPile.isEmpty && _gameState!.phase == GamePhase.playing && _gameStarted) {
-      debugPrint('WARNING: Discard pile is empty in playing phase!');
-    }
     
     // CRITICAL: Verify draw pile is not empty
     if (_gameState!.drawPile.isEmpty && _gameState!.phase == GamePhase.playing && _gameStarted) {
@@ -2018,6 +2191,7 @@ class GameProvider extends ChangeNotifier {
 
     _gameState = _gameState!.removePlayer(playerId);
 
+    // Send kick message to the player being kicked
     _networkService.send(
       type: MessageType.winnerKicked,
       payload: {'kickedPlayerId': playerId},
@@ -2033,6 +2207,8 @@ class GameProvider extends ChangeNotifier {
       );
     }
 
+    // Update DB and broadcast
+    _networkService.updateRemoteGameState(_generateSSOTState());
     _broadcastGameState();
     notifyListeners();
   }
@@ -2096,7 +2272,7 @@ class GameProvider extends ChangeNotifier {
       final stateMap = stateJson as Map<String, dynamic>;
       final discardCount = (stateMap['x'] as List?)?.length ?? (stateMap['discardPile'] as List?)?.length ?? 0;
       final drawCount = (stateMap['d'] as List?)?.length ?? (stateMap['drawPile'] as List?)?.length ?? 0;
-      debugPrint('DEBUG: Parsing state - discardPile: $discardCount, drawPile: $drawCount (compact: $isCompact)');
+      debugPrint('DEBUG: Parsing state (seq=$stateSeq) - discardPile: $discardCount, drawPile: $drawCount (compact: $isCompact)');
 
       var newState =
           isCompact
@@ -2197,6 +2373,19 @@ class GameProvider extends ChangeNotifier {
         debugPrint('DEBUG: Failed to parse hands: $e');
       }
 
+      // CRITICAL: Merge discard pile from separate column if available
+      // Check if discard pile is in the payload (from separate column)
+      final discardPileFromColumn = message.payload['discard_pile'] as List<dynamic>?;
+      if (discardPileFromColumn != null && discardPileFromColumn.isNotEmpty) {
+        final discardCards = discardPileFromColumn
+            .map((c) => UnoCard.fromJson(c as Map<String, dynamic>))
+            .toList();
+        if (discardCards.isNotEmpty) {
+          newState = newState.copyWith(discardPile: discardCards);
+          debugPrint('DEBUG: Merged discard pile from column (${discardCards.length} cards)');
+        }
+      }
+      
       // CRITICAL FIX: Merge Logic for Players & HostId
       // 1. If payload has no players (common in relational schema), keep existing players
       if (newState.players.isEmpty && _gameState?.players.isNotEmpty == true) {
@@ -2251,30 +2440,28 @@ class GameProvider extends ChangeNotifier {
         debugPrint('DEBUG: Client successfully synced with host!');
       }
 
-      // Clear isPreparingGame when we receive a playing phase state
-      if (newState.phase == GamePhase.playing) {
+      // Clear isPreparingGame when we receive a playing phase state (only once to prevent spam)
+      if (newState.phase == GamePhase.playing && _isPreparingGame) {
         _isPreparingGame = false;
         debugPrint('DEBUG: Game state received - clearing isPreparingGame');
       }
 
-      // CRITICAL: Only preserve discardPile/drawPile if we're in lobby phase or if the new state is clearly wrong
-      // In playing phase, always trust the new state (it should have the correct discard pile)
-      // Only preserve if we're transitioning from lobby to playing and the new state is missing data
-      if (newState.phase == GamePhase.playing && 
-          _gameState?.phase == GamePhase.lobby &&
-          newState.discardPile.isEmpty && 
-          _gameState?.discardPile.isNotEmpty == true) {
-        debugPrint('WARNING: Transitioning to playing with empty discard pile, preserving existing');
-        newState = newState.copyWith(discardPile: _gameState!.discardPile);
-      }
-      
-      // For draw pile, only preserve if transitioning from lobby
-      if (newState.phase == GamePhase.playing && 
-          _gameState?.phase == GamePhase.lobby &&
-          newState.drawPile.isEmpty && 
-          _gameState?.drawPile.isNotEmpty == true) {
-        debugPrint('WARNING: Transitioning to playing with empty draw pile, preserving existing');
-        newState = newState.copyWith(drawPile: _gameState!.drawPile);
+      // CRITICAL: Preserve draw/discard piles if new state has empty ones but we have valid ones
+      // This prevents losing deck/discard data during sync
+      if (newState.phase == GamePhase.playing) {
+        // Preserve draw pile if new state is empty but we have cards
+        if (newState.drawPile.isEmpty && 
+            _gameState?.drawPile.isNotEmpty == true) {
+          debugPrint('WARNING: Received empty draw pile, preserving existing (${_gameState!.drawPile.length} cards)');
+          newState = newState.copyWith(drawPile: _gameState!.drawPile);
+        }
+        
+        // Preserve discard pile if new state is empty but we have cards (only for older states)
+        if (newState.discardPile.isEmpty && 
+            _gameState?.discardPile.isNotEmpty == true &&
+            stateSeq < _lastStateSequence) {
+          newState = newState.copyWith(discardPile: _gameState!.discardPile);
+        }
       }
 
       _gameState = newState;
@@ -2325,7 +2512,11 @@ class GameProvider extends ChangeNotifier {
     if (kickedPlayerId == _myPlayerId) {
       _wasKickedAsWinner = true;
       _showWinnerAnimation = false;
+      _kicked = true;
+      _error = 'You were removed from the game';
       notifyListeners();
+      // Kick the player out
+      leaveRoom();
     }
 
     _showWinnerAnimation = false;
@@ -2439,7 +2630,8 @@ class GameProvider extends ChangeNotifier {
       );
     }
 
-    // 5. Broadcast update and notification
+    // 5. Update DB and broadcast update
+    _networkService.updateRemoteGameState(_generateSSOTState());
     _broadcastGameState();
 
     // Send toast notification command to all clients
@@ -2453,6 +2645,8 @@ class GameProvider extends ChangeNotifier {
         'isNotification': true, // Flag to handle it as notification
       },
     );
+    
+    notifyListeners();
   }
 
   /// Generate Single Source of Truth state for DB
@@ -2532,7 +2726,7 @@ class GameProvider extends ChangeNotifier {
 
     if (_isHost) {
       // Host resigning: Select new host randomly and notify all players
-      _handleHostResignation();
+      await _handleHostResignation();
     } else {
       _networkService.send(type: MessageType.playerResign);
       await leaveRoom();
@@ -2540,11 +2734,11 @@ class GameProvider extends ChangeNotifier {
   }
 
   /// Handle host resignation - select new host randomly
-  void _handleHostResignation() {
+  Future<void> _handleHostResignation() async {
     if (!_isHost || _gameState == null) return;
     if (_gameState!.players.length <= 1) {
       // Only host left, just leave
-      leaveRoom();
+      await leaveRoom();
       return;
     }
 
@@ -2554,7 +2748,7 @@ class GameProvider extends ChangeNotifier {
         .toList();
     
     if (remainingPlayers.isEmpty) {
-      leaveRoom();
+      await leaveRoom();
       return;
     }
 
@@ -2614,8 +2808,14 @@ class GameProvider extends ChangeNotifier {
     _networkService.updateRemoteGameState(_generateSSOTState());
     _broadcastGameState();
 
-    // Host leaves after migration
-    leaveRoom();
+    // Wait a bit for broadcasts to be sent
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    // Old host leaves after migration (this will trigger their own navigation)
+    _error = 'HOST_RESIGNED';
+    _kicked = true;
+    notifyListeners();
+    await leaveRoom();
   }
 
   /// Check if a card can be played

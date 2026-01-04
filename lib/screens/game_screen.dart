@@ -137,10 +137,10 @@ class _GameScreenState extends State<GameScreen> {
     return Consumer<GameProvider>(
       builder: (context, provider, child) {
         // Handle winner being kicked (they won and need to leave)
-        if (provider.wasKickedAsWinner) {
+        if (provider.wasKickedAsWinner || (provider.error != null && provider.error!.contains('removed'))) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             provider.exitToMenu();
-            Navigator.of(context).pushReplacementNamed('/lobby');
+            Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
           });
         }
 
@@ -211,18 +211,16 @@ class _GameScreenState extends State<GameScreen> {
         }
 
         // HOST_LEFT Listener (Host left - kick all players)
-        if (provider.error == 'HOST_LEFT') {
+        if (provider.error == 'HOST_LEFT' || provider.error == 'HOST_RESIGNED') {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
               AppToast.show(
                 context,
-                'Host left the room',
+                provider.error == 'HOST_LEFT' ? 'Host left the room' : 'Host resigned',
                 type: AppToastType.error,
               );
-              provider.exitToMenu(); // Ensure disconnection
-              Navigator.of(
-                context,
-              ).pushNamedAndRemoveUntil('/', (route) => false);
+              provider.exitToMenu();
+              Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
             }
           });
         }

@@ -150,11 +150,12 @@ class _HorseshoeHistoryOverlayState extends State<HorseshoeHistoryOverlay>
         // Standardize pivot for responsiveness (1.5x height ensures fan is at bottom)
         final centerY = constraints.maxHeight * 1.5;
 
-        // Radius: Tighter as requested
-        final radius = constraints.maxHeight * 0.7;
+        // Radius: Larger for better dealer's grip spread
+        final radius = constraints.maxHeight * 0.9;
 
-        // Max angular spread: Even tighter overlap
-        const maxAngle = 0.15;
+        // Max angular spread: Wider fan for dealer's grip effect
+        // Increased from 0.15 to 0.4 for better visibility
+        final maxAngle = count > 1 ? 0.4 : 0.0;
 
         return Stack(
           clipBehavior: Clip.none,
@@ -172,12 +173,14 @@ class _HorseshoeHistoryOverlayState extends State<HorseshoeHistoryOverlay>
             final x = centerX + radius * sin(angle);
             final y = centerY - radius * cos(angle);
 
-            // Card rotation follows the hand curve
-            final rotationDegrees = normalizedIndex * 15.0;
+            // Card rotation follows the hand curve (dealer's grip)
+            // More rotation for better fan effect
+            final rotationDegrees = normalizedIndex * 25.0;
             final rotation = rotationDegrees * pi / 180;
 
-            // Scale: newest (last) cards are slightly larger and on top
-            final scale = 0.7 + (index / count) * 0.3;
+            // Scale: newest (last) cards are larger and on top
+            // Better scale range for visibility
+            final scale = 0.65 + (index / count) * 0.35;
 
             final card = displayCards[index];
 

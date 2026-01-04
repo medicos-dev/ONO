@@ -121,13 +121,13 @@ class SupabaseUnoService {
     debugPrint('Supabase: Created room $_currentRoomId');
   }
 
-  /// Join an existing room
+  /// Join an existing room (using RPC for atomic operation)
   Future<void> _joinRoom(String roomCode) async {
     // 1. Get Room ID and game state
     final roomRes =
         await _client
             .from('uno_rooms')
-            .select('id, status, game_state')
+            .select('id, status, game_state, host_id')
             .eq('room_code', roomCode)
             .maybeSingle();
 
@@ -135,6 +135,7 @@ class SupabaseUnoService {
 
     final status = roomRes['status'] as String?;
     final gameState = roomRes['game_state'] as Map<String, dynamic>?;
+    final hostId = roomRes['host_id'] as String?;
     
     // Check if game has actually started (has players with cards)
     bool gameActuallyStarted = false;
@@ -170,14 +171,37 @@ class SupabaseUnoService {
 
     _currentRoomId = roomRes['id'];
 
-    // 2. Insert self into Room Players (Upsert to handle re-joins)
-    await _client.from('room_players').upsert({
-      'room_id': _currentRoomId,
-      'player_id': _myClientId,
-      'player_name': _myName,
-      'is_ready': false,
-      'cards': [],
-    }, onConflict: 'room_id, player_id');
+    // 2. Use RPC function to atomically add player to both room_players and game_state
+    try {
+      await _client.rpc(
+        'add_player_to_room',
+        params: {
+          'p_room_code': roomCode,
+          'p_player_id': _myClientId,
+          'p_player_name': _myName,
+          'p_host_id': hostId ?? '',
+        },
+      );
+      
+      debugPrint('Supabase: Added player via RPC, updated game_state received');
+    } catch (e) {
+      debugPrint('Supabase: RPC add_player_to_room failed, falling back to direct insert: $e');
+      
+      // Fallback: Direct insert if RPC fails
+      await _client.from('room_players').upsert({
+        'room_id': _currentRoomId,
+        'player_id': _myClientId,
+        'player_name': _myName,
+        'is_ready': false,
+        'cards': [],
+      }, onConflict: 'room_id, player_id');
+      
+      // Sync players to game_state
+      await _client.rpc(
+        'sync_players_to_game_state',
+        params: {'p_room_code': roomCode},
+      );
+    }
 
     debugPrint('Supabase: Joined room $_currentRoomId');
   }
@@ -234,6 +258,20 @@ class SupabaseUnoService {
               _cachedGameState = Map<String, dynamic>.from(
                 room['game_state'] as Map? ?? {},
               );
+
+              // CRITICAL: Inject discard_pile from separate column
+              final discardPile = room['discard_pile'] as List<dynamic>?;
+              if (discardPile != null && discardPile.isNotEmpty) {
+                _cachedGameState['x'] = discardPile; // Compact key
+                _cachedGameState['discardPile'] = discardPile; // Long form for compatibility
+                _cachedGameState['discard_pile'] = discardPile; // Column name for provider
+                debugPrint('Service: Loaded discard pile from column (${discardPile.length} cards)');
+              } else {
+                // Ensure empty discard pile is also set
+                _cachedGameState['x'] = [];
+                _cachedGameState['discardPile'] = [];
+                _cachedGameState['discard_pile'] = [];
+              }
 
               // Inject extra metadata for the UI/GameProvider
               _cachedGameState['status'] = room['status'];
@@ -331,48 +369,55 @@ class SupabaseUnoService {
     final playersArray = _cachedGameState['p'] as List<dynamic>?;
     
     debugPrint(
-      'Service: Hands map: ${handsMap != null ? handsMap.length : 0} players, Players array: ${playersArray != null ? playersArray.length : 0} players',
+      'Service: Hands map: ${handsMap != null ? handsMap.length : 0} players, Players array: ${playersArray != null ? playersArray.length : 0} players, Cached players: ${_cachedPlayers.length}',
     );
 
-    // CRITICAL: Inject the relational players list into the GameState payload
-    // Map DB columns (player_name) to Player model keys (name)
-    synthesizedPayload['players'] =
-        _cachedPlayers.map((p) {
-          final pid = p['player_id'].toString();
+    // CRITICAL: Build players list from _cachedPlayers (database source of truth)
+    // This ensures we always have the correct player count from room_players table
+    final synthesizedPlayers = <Map<String, dynamic>>[];
+    
+    for (final p in _cachedPlayers) {
+      final pid = p['player_id'].toString();
 
-          // Priority 1: Use hand from game_state hands map (SSOT)
-          List<dynamic> playerHand = [];
-          if (handsMap != null && handsMap.containsKey(pid)) {
-            playerHand = handsMap[pid] as List<dynamic>;
-          } 
-          // Priority 2: Check players array (compact format)
-          else if (playersArray != null) {
-            try {
-              final playerInArray = playersArray.firstWhere(
-                (pl) => (pl as Map<String, dynamic>)['i'] == pid,
-                orElse: () => null,
-              );
-              if (playerInArray != null) {
-                final playerData = playerInArray as Map<String, dynamic>;
-                playerHand = playerData['h'] as List<dynamic>? ?? [];
-              }
-            } catch (e) {
-              debugPrint('Service: Error parsing player from array: $e');
-            }
+      // Priority 1: Use hand from game_state hands map (SSOT)
+      List<dynamic> playerHand = [];
+      if (handsMap != null && handsMap.containsKey(pid)) {
+        playerHand = handsMap[pid] as List<dynamic>;
+      } 
+      // Priority 2: Check players array (compact format)
+      else if (playersArray != null) {
+        try {
+          final playerInArray = playersArray.firstWhere(
+            (pl) {
+              final plMap = pl as Map<String, dynamic>;
+              return (plMap['i']?.toString() == pid || plMap['id']?.toString() == pid);
+            },
+            orElse: () => null,
+          );
+          if (playerInArray != null) {
+            final playerData = playerInArray as Map<String, dynamic>;
+            playerHand = playerData['h'] as List<dynamic>? ?? [];
           }
-          // Priority 3: Fallback to room_players cards
-          if (playerHand.isEmpty) {
-            playerHand = (p['cards'] ?? []) as List<dynamic>;
-          }
+        } catch (e) {
+          debugPrint('Service: Error parsing player from array: $e');
+        }
+      }
+      // Priority 3: Fallback to room_players cards
+      if (playerHand.isEmpty) {
+        playerHand = (p['cards'] ?? []) as List<dynamic>;
+      }
 
-          return {
-            'id': pid,
-            'name': p['player_name'] ?? 'Guest',
-            'isReady': p['is_ready'] ?? false,
-            'isHost': pid == _cachedGameState['hostId'],
-            'hand': playerHand,
-          };
-        }).toList();
+      synthesizedPlayers.add({
+        'id': pid,
+        'name': p['player_name'] ?? 'Guest',
+        'isReady': p['is_ready'] ?? false,
+        'isHost': pid == _cachedGameState['hostId'],
+        'hand': playerHand,
+      });
+    }
+    
+    // CRITICAL: Always use the synthesized players list (from database)
+    synthesizedPayload['players'] = synthesizedPlayers;
     
     // CRITICAL: Ensure hands map is also in the payload for SSOT
     if (handsMap != null) {
@@ -702,6 +747,7 @@ class SupabaseUnoService {
 
   /// Update remote game state (Host uses this)
   /// Also updates room_players table to keep DB in sync with broadcasts
+  /// Update game state in database (using RPC for atomic operation)
   Future<void> updateRemoteGameState(Map<String, dynamic> newState) async {
     if (_currentRoomCode == null || _currentRoomId == null) return; // Guard
 
@@ -716,20 +762,44 @@ class SupabaseUnoService {
         debugPrint('WARNING: State being stored without hands map!');
       }
       
+      // Extract discard pile separately (CRITICAL: Store in separate column)
+      final discardPile = newState['x'] as List<dynamic>? ?? newState['discardPile'] as List<dynamic>?;
+      debugPrint('Supabase: Storing discard pile with ${discardPile?.length ?? 0} cards');
+      
       // Determine status based on game phase (CRITICAL: Don't set 'playing' in lobby)
       final phase = newState['phase'] as String?;
       final status = (phase == 'playing' || phase == 'finished') ? phase! : 'lobby';
       
       debugPrint('Supabase: Updating state with phase=${phase}, status=${status}');
       
-      // 1. Update uno_rooms table with game_state and status
-      await _client
-          .from(_tableName)
-          .update({
-            'game_state': newState,
-            'status': status, // Set status based on phase, not always 'playing'
-          })
-          .eq('room_code', _currentRoomCode!);
+      // 1. Use RPC function to atomically update game_state, discard_pile, and status
+      try {
+        await _client.rpc(
+          'update_game_state',
+          params: {
+            'p_room_code': _currentRoomCode!,
+            'p_game_state': newState,
+            'p_status': status,
+            'p_discard_pile': discardPile ?? [],
+          },
+        );
+      } catch (rpcError) {
+        debugPrint('Supabase: RPC update_game_state failed, falling back to direct update: $rpcError');
+        
+        // Fallback: Direct update if RPC fails
+        final updateData = <String, dynamic>{
+          'game_state': newState,
+          'status': status,
+        };
+        if (discardPile != null) {
+          updateData['discard_pile'] = discardPile;
+        }
+        
+        await _client
+            .from(_tableName)
+            .update(updateData)
+            .eq('room_code', _currentRoomCode!);
+      }
 
       // 2. Update room_players table: sync cards and is_ready for each player
       if (handsMap != null && handsMap.isNotEmpty) {
@@ -764,6 +834,23 @@ class SupabaseUnoService {
     }
   }
 
+  /// Sync players from room_players to game_state (Host uses this)
+  Future<void> syncPlayersToGameState(String roomCode) async {
+    try {
+      debugPrint('Supabase: Syncing players from room_players to game_state');
+      
+      await _client.rpc(
+        'sync_players_to_game_state',
+        params: {'p_room_code': roomCode},
+      );
+      
+      debugPrint('Supabase: Players synced successfully');
+    } catch (e) {
+      debugPrint('Supabase: Failed to sync players: $e');
+      // Don't throw - allow fallback behavior
+    }
+  }
+
   /// Request sync from host (Client uses this)
   Future<void> requestSync() async {
     // Force re-fetch of room state
@@ -771,19 +858,20 @@ class SupabaseUnoService {
       final roomRes =
           await _client
               .from('uno_rooms')
-              .select('game_state, status')
+              .select('game_state, status, host_id')
               .eq('id', _currentRoomId!)
               .maybeSingle();
 
       if (roomRes != null) {
         final gameState = roomRes['game_state'] as Map<String, dynamic>? ?? {};
         gameState['status'] = roomRes['status'];
+        gameState['hostId'] = roomRes['host_id']; // Inject hostId from database
 
         _messageController.add(
           GameMessage(
             type: MessageType.gameState,
             senderId: 'host',
-            senderName: 'Host', // Fixed missing param
+            senderName: 'Host',
             payload: gameState,
           ),
         );
