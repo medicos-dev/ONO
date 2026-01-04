@@ -4,19 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="ONO - The Classic Game. Reimagined. Real-time multiplayer UNO game experience.">
-  <title>ONO - The Classic Game. Reimagined</title>
-  
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <title>ONO - Reimagined</title>
   
   <!-- Libraries CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/studio-freight/lenis@1.0.29/bundled/lenis.min.js"></script>
   <script src="https://unpkg.com/splitting/dist/splitting.min.js"></script>
-  <script src="https://unpkg.com/splitting/dist/splitting.css"></script>
+  <link rel="stylesheet" href="https://unpkg.com/splitting/dist/splitting.css">
   <script src="https://unpkg.com/phosphor-icons"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   
   <style>
     @font-face {
@@ -35,9 +32,14 @@
       --dark-surface: #151520;
       --dark-surface-2: #1a1a2e;
       --text-primary: #ffffff;
-      --text-secondary: #b8b8c8;
+      --text-secondary: #e0e0e8;
+      --text-tertiary: #b8b8c8;
       --glass-bg: rgba(255, 255, 255, 0.05);
-      --glass-border: rgba(255, 255, 255, 0.1);
+      --glass-border: rgba(255, 255, 255, 0.15);
+      --uno-red: #E42024;
+      --uno-blue: #0066CC;
+      --uno-green: #00AA44;
+      --uno-yellow: #FFCC00;
     }
 
     * {
@@ -50,6 +52,31 @@
       scroll-behavior: smooth;
     }
 
+    /* Hide Scrollbar Completely - Keep Scrolling Functionality */
+    ::-webkit-scrollbar {
+      width: 0px;
+      height: 0px;
+      display: none;
+    }
+
+    ::-webkit-scrollbar-track {
+      display: none;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      display: none;
+    }
+
+    /* Firefox - Hide Scrollbar */
+    * {
+      scrollbar-width: none;
+    }
+
+    /* IE and Edge */
+    * {
+      -ms-overflow-style: none;
+    }
+
     body {
       font-family: 'SourGummy', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--dark-bg);
@@ -57,6 +84,7 @@
       overflow-x: hidden;
       cursor: none;
       position: relative;
+      line-height: 1.6;
     }
 
     /* Noise Texture */
@@ -68,7 +96,7 @@
       width: 100%;
       height: 100%;
       background-image: 
-        url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
       pointer-events: none;
       z-index: 1000;
     }
@@ -76,27 +104,29 @@
     /* Custom Cursor */
     .cursor {
       position: fixed;
-      width: 10px;
-      height: 10px;
+      width: 20px;
+      height: 20px;
       border-radius: 50%;
       background: var(--neon-blue);
       pointer-events: none;
       z-index: 9999;
-      mix-blend-mode: difference;
-      transition: transform 0.2s ease;
+      mix-blend-mode: normal;
+      transition: transform 0.15s ease;
+      box-shadow: 0 0 30px var(--neon-blue), 0 0 60px rgba(0, 245, 255, 0.5);
+      border: 2px solid rgba(255, 255, 255, 0.3);
     }
 
     .cursor-ring {
       position: fixed;
-      width: 40px;
-      height: 40px;
+      width: 50px;
+      height: 50px;
       border: 2px solid var(--neon-blue);
       border-radius: 50%;
       pointer-events: none;
       z-index: 9998;
       mix-blend-mode: difference;
       transform: translate(-50%, -50%) scale(0);
-      transition: transform 0.3s ease;
+      transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
 
     .cursor-ring.active {
@@ -124,6 +154,7 @@
       color: var(--neon-blue);
       line-height: 1;
       font-family: 'SourGummy', monospace;
+      text-shadow: 0 0 40px var(--neon-blue);
     }
 
     .preloader-overlay {
@@ -142,10 +173,11 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       position: relative;
-      padding: 2rem;
+      padding: 1.5rem;
       overflow: hidden;
+      padding-top: 8vh;
     }
 
     .hero-bg-cards {
@@ -158,39 +190,116 @@
       z-index: 1;
     }
 
-    .floating-card {
+    /* Realistic UNO Card Design */
+    .uno-card {
       position: absolute;
-      width: 200px;
-      height: 280px;
-      background: linear-gradient(135deg, var(--neon-red), var(--neon-blue));
-      border-radius: 20px;
+      width: 140px;
+      height: 200px;
+      border-radius: 12px;
       transform-style: preserve-3d;
-      transition: transform 0.1s ease-out;
-      box-shadow: 0 20px 60px rgba(0, 245, 255, 0.3);
+      transition: transform 0.15s ease-out;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 20px rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      font-weight: bold;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      overflow: hidden;
     }
 
-    .floating-card:nth-child(1) {
+    .uno-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 10px,
+        rgba(255, 255, 255, 0.05) 10px,
+        rgba(255, 255, 255, 0.05) 20px
+      );
+      opacity: 0.3;
+    }
+
+    .uno-card.red {
+      background: linear-gradient(135deg, var(--uno-red), #C41E3A);
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .uno-card.blue {
+      background: linear-gradient(135deg, var(--uno-blue), #004C99);
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .uno-card.green {
+      background: linear-gradient(135deg, var(--uno-green), #008833);
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .uno-card.yellow {
+      background: linear-gradient(135deg, var(--uno-yellow), #FFAA00);
+      color: #1a1a1a;
+      text-shadow: 0 2px 10px rgba(255, 255, 255, 0.3);
+    }
+
+    .uno-card.wild {
+      background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+      color: white;
+      text-shadow: 0 2px 10px rgba(255, 255, 255, 0.3);
+    }
+
+    .card-corner {
+      font-size: 24px;
+      font-weight: bold;
+      align-self: flex-start;
+    }
+
+    .card-center {
+      font-size: 56px;
+      font-weight: bold;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card-corner-bottom {
+      font-size: 24px;
+      font-weight: bold;
+      align-self: flex-end;
+      transform: rotate(180deg);
+    }
+
+    .uno-card:nth-child(1) {
       top: 10%;
-      left: 10%;
-      background: linear-gradient(135deg, var(--neon-red), #ff006e);
+      left: 8%;
+      transform: rotate(-15deg);
     }
 
-    .floating-card:nth-child(2) {
-      top: 20%;
-      right: 15%;
-      background: linear-gradient(135deg, var(--neon-blue), #00f5ff);
-    }
-
-    .floating-card:nth-child(3) {
-      bottom: 15%;
-      left: 20%;
-      background: linear-gradient(135deg, var(--neon-green), #39ff14);
-    }
-
-    .floating-card:nth-child(4) {
-      bottom: 10%;
+    .uno-card:nth-child(2) {
+      top: 15%;
       right: 10%;
-      background: linear-gradient(135deg, var(--neon-yellow), #ffbe0b);
+      transform: rotate(12deg);
+    }
+
+    .uno-card:nth-child(3) {
+      bottom: 12%;
+      left: 12%;
+      transform: rotate(-8deg);
+    }
+
+    .uno-card:nth-child(4) {
+      bottom: 10%;
+      right: 8%;
+      transform: rotate(18deg);
     }
 
     .hero-content {
@@ -198,19 +307,33 @@
       z-index: 2;
       text-align: center;
       max-width: 1200px;
+      margin-top: 5vh;
+    }
+
+    .hero-logo {
+      width: 100px;
+      height: 100px;
+      margin: 0 auto 1.5rem;
+      filter: drop-shadow(0 0 30px rgba(0, 245, 255, 0.5));
+      animation: float 3s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-15px); }
     }
 
     .hero-title {
-      font-size: clamp(4rem, 15vw, 12rem);
+      font-size: clamp(4rem, 15vw, 11rem);
       font-weight: 500;
-      line-height: 0.9;
-      margin-bottom: 2rem;
+      line-height: 0.85;
+      margin-bottom: 1rem;
       background: linear-gradient(135deg, var(--neon-red), var(--neon-blue), var(--neon-green), var(--neon-yellow));
       background-size: 300% 300%;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      animation: gradientShift 5s ease infinite;
+      animation: gradientShift 6s ease infinite;
     }
 
     @keyframes gradientShift {
@@ -219,10 +342,22 @@
     }
 
     .hero-subtitle {
-      font-size: clamp(1.5rem, 4vw, 3rem);
-      color: var(--text-secondary);
-      margin-bottom: 3rem;
+      font-size: clamp(1.5rem, 4vw, 2.8rem);
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
       font-weight: 500;
+      text-shadow: 0 2px 20px rgba(255, 255, 255, 0.3);
+    }
+
+    .hero-tagline {
+      font-size: clamp(0.9rem, 2vw, 1.2rem);
+      color: var(--text-secondary);
+      margin-bottom: 2.5rem;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      text-shadow: 0 1px 10px rgba(255, 255, 255, 0.2);
+      line-height: 1.6;
     }
 
     .download-buttons {
@@ -230,14 +365,14 @@
       gap: 1.5rem;
       justify-content: center;
       flex-wrap: wrap;
-      margin-top: 3rem;
+      margin-top: 2rem;
     }
 
     .download-btn {
       padding: 1rem 2.5rem;
-      background: var(--glass-bg);
-      backdrop-filter: blur(20px);
-      border: 1px solid var(--glass-border);
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(30px);
+      border: 2px solid rgba(255, 255, 255, 0.3);
       border-radius: 50px;
       color: var(--text-primary);
       text-decoration: none;
@@ -246,9 +381,11 @@
       display: flex;
       align-items: center;
       gap: 0.75rem;
-      transition: all 0.3s ease;
+      transition: all 0.4s ease;
       position: relative;
       overflow: hidden;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
 
     .download-btn::before {
@@ -258,8 +395,8 @@
       left: -100%;
       width: 100%;
       height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-      transition: left 0.5s ease;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+      transition: left 0.6s ease;
     }
 
     .download-btn:hover::before {
@@ -267,14 +404,19 @@
     }
 
     .download-btn:hover {
-      transform: translateY(-5px);
-      box-shadow: 0 10px 40px rgba(0, 245, 255, 0.3);
+      transform: translateY(-5px) scale(1.05);
+      box-shadow: 0 15px 50px rgba(0, 245, 255, 0.4);
       border-color: var(--neon-blue);
+      background: rgba(0, 245, 255, 0.1);
     }
 
-    /* Features Section */
+    .download-btn i {
+      font-size: 1.4rem;
+    }
+
+    /* Features Section - Proper Bento Grid */
     .features {
-      padding: 8rem 2rem;
+      padding: 4rem 1.5rem;
       max-width: 1400px;
       margin: 0 auto;
     }
@@ -282,26 +424,48 @@
     .section-title {
       font-size: clamp(3rem, 8vw, 6rem);
       text-align: center;
-      margin-bottom: 4rem;
+      margin-bottom: 0.5rem;
       font-weight: 500;
+      color: var(--text-primary);
+      text-shadow: 0 0 40px rgba(0, 245, 255, 0.8), 0 4px 30px rgba(255, 255, 255, 0.5), 0 2px 10px rgba(0, 0, 0, 0.8);
+      -webkit-text-stroke: 1px rgba(255, 255, 255, 0.1);
     }
 
+    .section-subtitle {
+      text-align: center;
+      font-size: clamp(1rem, 2.5vw, 1.5rem);
+      color: var(--text-secondary);
+      margin-bottom: 3rem;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Bento Grid Layout */
     .bento-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 2rem;
-      margin-top: 4rem;
+      grid-template-columns: repeat(12, 1fr);
+      grid-template-rows: repeat(3, minmax(200px, auto));
+      gap: 1.5rem;
+      margin-top: 3rem;
+      margin-bottom: 2rem;
     }
 
     .bento-card {
-      background: var(--glass-bg);
-      backdrop-filter: blur(20px);
-      border: 1px solid var(--glass-border);
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(30px);
+      border: 2px solid rgba(255, 255, 255, 0.2);
       border-radius: 24px;
-      padding: 3rem;
-      transition: all 0.4s ease;
+      padding: 2rem;
+      transition: all 0.5s ease;
       position: relative;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      opacity: 1;
+      visibility: visible;
+      min-height: 0;
     }
 
     .bento-card::before {
@@ -313,23 +477,68 @@
       height: 100%;
       background: linear-gradient(135deg, var(--neon-red), var(--neon-blue));
       opacity: 0;
-      transition: opacity 0.4s ease;
+      transition: opacity 0.5s ease;
+      z-index: -1;
     }
 
     .bento-card:hover::before {
-      opacity: 0.1;
+      opacity: 0.12;
     }
 
     .bento-card:hover {
-      transform: translateY(-10px);
+      transform: translateY(-8px);
       border-color: var(--neon-blue);
-      box-shadow: 0 20px 60px rgba(0, 245, 255, 0.2);
+      box-shadow: 0 20px 60px rgba(0, 245, 255, 0.3);
+    }
+
+    /* Bento Grid Items - Different Sizes */
+    .bento-card:nth-child(1) {
+      grid-column: span 6;
+      grid-row: span 2;
+      min-height: 400px;
+    }
+
+    .bento-card:nth-child(2) {
+      grid-column: span 6;
+      grid-row: span 1;
+      min-height: 200px;
+    }
+
+    .bento-card:nth-child(3) {
+      grid-column: span 3;
+      grid-row: span 1;
+      min-height: 200px;
+    }
+
+    .bento-card:nth-child(4) {
+      grid-column: span 3;
+      grid-row: span 1;
+      min-height: 200px;
+    }
+
+    .bento-card:nth-child(5) {
+      grid-column: span 4;
+      grid-row: span 1;
+      min-height: 200px;
+    }
+
+    .bento-card:nth-child(6) {
+      grid-column: span 4;
+      grid-row: span 1;
+      min-height: 200px;
+    }
+
+    .bento-card:nth-child(7) {
+      grid-column: span 4;
+      grid-row: span 1;
+      min-height: 200px;
     }
 
     .bento-icon {
       font-size: 3rem;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
       display: block;
+      filter: drop-shadow(0 0 10px currentColor);
     }
 
     .bento-title {
@@ -337,26 +546,122 @@
       margin-bottom: 1rem;
       font-weight: 500;
       color: var(--text-primary);
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      flex-shrink: 0;
     }
 
     .bento-desc {
-      font-size: 1.1rem;
+      font-size: 1rem;
       color: var(--text-secondary);
       line-height: 1.6;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 4;
+      line-clamp: 4;
+      -webkit-box-orient: vertical;
+      flex: 1;
+      min-height: 0;
+      word-wrap: break-word;
+      hyphens: auto;
     }
+
+    /* Gameplay Section */
+    .gameplay {
+      padding: 4rem 1.5rem;
+      background: var(--dark-surface);
+      position: relative;
+    }
+
+    .gameplay-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3rem;
+      align-items: center;
+    }
+
+    .gameplay-text h2 {
+      font-size: clamp(2.5rem, 6vw, 5rem);
+      margin-bottom: 1.5rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      text-shadow: 0 2px 20px rgba(255, 255, 255, 0.2);
+    }
+
+    .gameplay-text p {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      line-height: 1.8;
+      margin-bottom: 1.5rem;
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .gameplay-visual {
+      position: relative;
+      height: 400px;
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px);
+      border-radius: 24px;
+      border: 2px solid var(--glass-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .card-stack {
+      position: relative;
+      width: 160px;
+      height: 224px;
+    }
+
+    .stack-card {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 12px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      font-weight: bold;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .stack-card.red {
+      background: linear-gradient(135deg, var(--uno-red), #C41E3A);
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .stack-card.blue {
+      background: linear-gradient(135deg, var(--uno-blue), #004C99);
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .stack-card:nth-child(1) { transform: translate(0, 0) rotate(-5deg); z-index: 4; }
+    .stack-card:nth-child(2) { transform: translate(10px, 10px) rotate(-2deg); z-index: 3; }
+    .stack-card:nth-child(3) { transform: translate(20px, 20px) rotate(2deg); z-index: 2; }
+    .stack-card:nth-child(4) { transform: translate(30px, 30px) rotate(5deg); z-index: 1; }
 
     /* Marquee Section */
     .marquee-section {
-      padding: 6rem 0;
+      padding: 4rem 0;
       overflow: hidden;
-      background: var(--dark-surface);
+      background: var(--dark-surface-2);
       position: relative;
     }
 
     .marquee {
       display: flex;
       white-space: nowrap;
-      animation: marquee 30s linear infinite;
+      animation: marquee 35s linear infinite;
     }
 
     .marquee-text {
@@ -368,7 +673,7 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      animation: gradientShift 3s ease infinite;
+      animation: gradientShift 4s ease infinite;
     }
 
     @keyframes marquee {
@@ -376,16 +681,76 @@
       100% { transform: translateX(-50%); }
     }
 
+    /* Stats Section */
+    .stats {
+      padding: 4rem 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 2rem;
+      margin-top: 3rem;
+    }
+
+    .stat-card {
+      text-align: center;
+      padding: 1.5rem;
+    }
+
+    .stat-number {
+      font-size: clamp(2.5rem, 6vw, 4rem);
+      font-weight: 500;
+      color: var(--text-primary);
+      text-shadow: 0 0 30px rgba(0, 245, 255, 0.8), 0 4px 20px rgba(57, 255, 20, 0.5), 0 2px 10px rgba(0, 0, 0, 0.8);
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-label {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
     /* Footer */
     .footer {
-      padding: 4rem 2rem;
+      padding: 3rem 1.5rem 2rem;
       text-align: center;
       background: var(--dark-surface-2);
+      border-top: 1px solid var(--glass-border);
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 2rem;
+      margin-bottom: 3rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 1rem;
+      transition: color 0.3s ease;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
+    .footer-link:hover {
+      color: var(--neon-blue);
+      text-shadow: 0 0 20px var(--neon-blue);
     }
 
     .developer-credit {
       margin-top: 3rem;
-      font-size: 1.2rem;
+      font-size: 1.1rem;
+    }
+
+    .developer-credit p {
+      color: var(--text-secondary);
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
     }
 
     .developer-info {
@@ -400,8 +765,9 @@
       width: 60px;
       height: 60px;
       border-radius: 50%;
-      border: 2px solid var(--neon-blue);
+      border: 3px solid var(--neon-blue);
       object-fit: cover;
+      box-shadow: 0 0 30px rgba(0, 245, 255, 0.5);
     }
 
     .glitch-text {
@@ -409,46 +775,365 @@
       display: inline-block;
       color: var(--neon-blue);
       font-weight: 500;
-      animation: glitch 2s infinite;
+      font-size: 1.3rem;
+      animation: glitch 3s infinite;
+      text-shadow: 0 0 20px var(--neon-blue);
     }
 
     @keyframes glitch {
       0%, 100% {
         transform: translate(0);
-        text-shadow: 0 0 10px var(--neon-blue);
+        text-shadow: 0 0 20px var(--neon-blue);
       }
       20% {
-        transform: translate(-2px, 2px);
-        text-shadow: -2px 2px 10px var(--neon-red);
+        transform: translate(-3px, 3px);
+        text-shadow: -3px 3px 20px var(--neon-red);
       }
       40% {
-        transform: translate(-2px, -2px);
-        text-shadow: 2px -2px 10px var(--neon-green);
+        transform: translate(-3px, -3px);
+        text-shadow: 3px -3px 20px var(--neon-green);
       }
       60% {
-        transform: translate(2px, 2px);
-        text-shadow: -2px -2px 10px var(--neon-yellow);
+        transform: translate(3px, 3px);
+        text-shadow: -3px -3px 20px var(--neon-yellow);
       }
       80% {
-        transform: translate(2px, -2px);
-        text-shadow: 2px 2px 10px var(--neon-blue);
+        transform: translate(3px, -3px);
+        text-shadow: 3px 3px 20px var(--neon-blue);
       }
     }
 
+    .copyright {
+      margin-top: 2rem;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Modal Overlay */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(10px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      cursor: default;
+      overflow: hidden; /* Prevent overlay from scrolling */
+    }
+
+    .modal-overlay.active {
+      display: flex;
+      opacity: 1;
+    }
+
+    .modal {
+      background: var(--dark-surface);
+      border: 2px solid var(--glass-border);
+      border-radius: 32px;
+      padding: 3rem;
+      max-width: 600px;
+      width: 90%;
+      max-height: 90vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
+      box-shadow: 0 30px 100px rgba(0, 0, 0, 0.7);
+      transform: scale(0.9);
+      transition: transform 0.3s ease;
+      cursor: default;
+      -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+      scrollbar-width: none; /* Firefox - hide scrollbar */
+      -ms-overflow-style: none; /* IE and Edge - hide scrollbar */
+      pointer-events: auto; /* Ensure modal can receive events */
+    }
+
+    /* Hide scrollbar in modal but keep scrolling */
+    .modal::-webkit-scrollbar {
+      width: 0px;
+      height: 0px;
+      display: none;
+    }
+
+    .modal-overlay.active .modal {
+      transform: scale(1);
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 1.5rem;
+      right: 1.5rem;
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 2rem;
+      cursor: pointer;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: all 0.3s ease;
+      line-height: 1;
+    }
+
+    .modal-close:hover {
+      background: rgba(255, 255, 255, 0.1);
+      transform: rotate(90deg);
+      color: var(--neon-blue);
+    }
+
+    .modal-title {
+      font-size: 2.5rem;
+      margin-bottom: 2rem;
+      color: var(--text-primary);
+      text-shadow: 0 2px 20px rgba(255, 255, 255, 0.2);
+      text-align: center;
+    }
+
+    .about-content {
+      text-align: center;
+    }
+
+    .about-image {
+      width: 150px;
+      height: 150px;
+      border-radius: 50%;
+      border: 4px solid var(--neon-blue);
+      object-fit: cover;
+      margin: 0 auto 2rem;
+      box-shadow: 0 0 40px rgba(0, 245, 255, 0.5);
+    }
+
+    .about-name {
+      font-size: 2rem;
+      color: var(--neon-blue);
+      margin-bottom: 1rem;
+      text-shadow: 0 0 20px var(--neon-blue);
+    }
+
+    .about-bio {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      line-height: 1.8;
+      text-align: left;
+      margin-top: 2rem;
+    }
+
+    .about-bio p {
+      margin-bottom: 1rem;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Support Form */
+    .support-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .form-label {
+      color: var(--text-secondary);
+      font-size: 1rem;
+      font-weight: 500;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
+    .form-input,
+    .form-textarea {
+      padding: 1rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 2px solid var(--glass-border);
+      border-radius: 12px;
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-family: 'SourGummy', sans-serif;
+      transition: all 0.3s ease;
+    }
+
+    .form-input::placeholder,
+    .form-textarea::placeholder {
+      color: var(--text-tertiary);
+      opacity: 0.7;
+    }
+
+    .form-input:focus,
+    .form-textarea:focus {
+      outline: none;
+      border-color: var(--neon-blue);
+      box-shadow: 0 0 20px rgba(0, 245, 255, 0.3);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .form-textarea {
+      min-height: 150px;
+      resize: vertical;
+    }
+
+    .form-submit {
+      padding: 1rem 2rem;
+      background: linear-gradient(135deg, var(--neon-blue), var(--neon-green));
+      border: none;
+      border-radius: 50px;
+      color: var(--text-primary);
+      font-size: 1.1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      margin-top: 1rem;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .form-submit:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 40px rgba(0, 245, 255, 0.4);
+    }
+
+    .form-submit:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .form-message {
+      padding: 1rem;
+      border-radius: 12px;
+      text-align: center;
+      font-size: 0.95rem;
+      margin-top: 1rem;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    }
+
+    .form-message.success {
+      background: rgba(57, 255, 20, 0.2);
+      border: 2px solid var(--neon-green);
+      color: var(--neon-green);
+    }
+
+    .form-message.error {
+      background: rgba(255, 0, 110, 0.2);
+      border: 2px solid var(--neon-red);
+      color: var(--neon-red);
+    }
+
     /* Responsive */
-    @media (max-width: 768px) {
+    @media (max-width: 968px) {
       .bento-grid {
         grid-template-columns: 1fr;
+        grid-template-rows: auto;
       }
-      
+
+      .bento-card {
+        grid-column: span 1 !important;
+        grid-row: span 1 !important;
+      }
+
+      .gameplay-content {
+        grid-template-columns: 1fr;
+      }
+
       .download-buttons {
         flex-direction: column;
         align-items: center;
       }
-      
-      .floating-card {
+
+      .download-btn {
+        width: 100%;
+        max-width: 300px;
+        justify-content: center;
+      }
+
+      .uno-card {
+        width: 100px;
+        height: 143px;
+        font-size: 0.8rem;
+      }
+
+      .card-center {
+        font-size: 40px;
+      }
+
+      .card-corner, .card-corner-bottom {
+        font-size: 18px;
+      }
+
+      .hero {
+        min-height: 90vh;
+        padding: 1rem;
+      }
+
+      .features, .gameplay, .stats {
+        padding: 3rem 1rem;
+      }
+
+      .marquee-section {
+        padding: 3rem 0;
+      }
+
+      .modal {
+        padding: 2rem 1.5rem;
+        max-width: 95%;
+      }
+
+      .modal-title {
+        font-size: 2rem;
+      }
+
+      .about-image {
         width: 120px;
-        height: 168px;
+        height: 120px;
+      }
+
+      .about-name {
+        font-size: 1.5rem;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .hero-title {
+        font-size: 4rem;
+      }
+
+      .hero-subtitle {
+        font-size: 1.5rem;
+      }
+
+      .section-title {
+        font-size: 2.5rem;
+      }
+
+      .bento-card {
+        padding: 1.5rem;
+      }
+
+      .bento-icon {
+        font-size: 2.5rem;
+      }
+
+      .bento-title {
+        font-size: 1.5rem;
+      }
+
+      .bento-desc {
+        font-size: 0.95rem;
       }
     }
 
@@ -472,15 +1157,33 @@
   <!-- Hero Section -->
   <section class="hero">
     <div class="hero-bg-cards">
-      <div class="floating-card" data-card="1"></div>
-      <div class="floating-card" data-card="2"></div>
-      <div class="floating-card" data-card="3"></div>
-      <div class="floating-card" data-card="4"></div>
+      <div class="uno-card red" data-card="1">
+        <div class="card-corner">7</div>
+        <div class="card-center">7</div>
+        <div class="card-corner-bottom">7</div>
+      </div>
+      <div class="uno-card blue" data-card="2">
+        <div class="card-corner">+4</div>
+        <div class="card-center">+4</div>
+        <div class="card-corner-bottom">+4</div>
+      </div>
+      <div class="uno-card green" data-card="3">
+        <div class="card-corner">R</div>
+        <div class="card-center">⇄</div>
+        <div class="card-corner-bottom">R</div>
+      </div>
+      <div class="uno-card wild" data-card="4">
+        <div class="card-corner">W</div>
+        <div class="card-center">WILD</div>
+        <div class="card-corner-bottom">W</div>
+      </div>
     </div>
     
     <div class="hero-content">
+      <img src="../assets/ONO APP LOGO.png" alt="ONO Logo" class="hero-logo">
       <h1 class="hero-title" data-splitting>ONO</h1>
       <p class="hero-subtitle" data-splitting>The Classic Game. Reimagined.</p>
+      <p class="hero-tagline">Experience the thrill of UNO like never before. Real-time multiplayer action, stunning visuals, and seamless gameplay across all platforms.</p>
       
       <div class="download-buttons">
         <a href="#" class="download-btn" data-cursor-hover>
@@ -495,15 +1198,16 @@
     </div>
   </section>
 
-  <!-- Features Section -->
+  <!-- Features Section - Bento Grid -->
   <section class="features">
     <h2 class="section-title" data-splitting>Features</h2>
+    <p class="section-subtitle">Everything you love about UNO, enhanced with cutting-edge technology</p>
     
     <div class="bento-grid">
       <div class="bento-card" data-cursor-hover>
         <i class="ph ph-lightning bento-icon" style="color: var(--neon-yellow);"></i>
         <h3 class="bento-title">Real-time Sync</h3>
-        <p class="bento-desc">Experience seamless multiplayer gameplay with instant synchronization. Every card play, every move, happens in real-time across all devices.</p>
+        <p class="bento-desc">Experience seamless multiplayer gameplay with instant synchronization. Every card play, every move, happens in real-time across all devices. No delays, no lag - just pure, uninterrupted fun.</p>
       </div>
       
       <div class="bento-card" data-cursor-hover>
@@ -515,7 +1219,91 @@
       <div class="bento-card" data-cursor-hover>
         <i class="ph ph-clock-clockwise bento-icon" style="color: var(--neon-green);"></i>
         <h3 class="bento-title">Horseshoe History</h3>
-        <p class="bento-desc">Track every move with our unique horseshoe-shaped history viewer. Review your game strategy and learn from each play.</p>
+        <p class="bento-desc">Track every move with our unique horseshoe-shaped history viewer.</p>
+      </div>
+
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-users-three bento-icon" style="color: var(--neon-red);"></i>
+        <h3 class="bento-title">Multiplayer Rooms</h3>
+        <p class="bento-desc">Create or join game rooms with friends. Private rooms, public lobbies, and seamless matchmaking.</p>
+      </div>
+
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-trophy bento-icon" style="color: var(--neon-yellow);"></i>
+        <h3 class="bento-title">Achievements</h3>
+        <p class="bento-desc">Unlock achievements, track your wins, and climb the leaderboards. Show off your UNO mastery and compete for the top spot. Every game counts towards your progress.</p>
+      </div>
+
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-paint-brush bento-icon" style="color: var(--neon-blue);"></i>
+        <h3 class="bento-title">Stunning Design</h3>
+        <p class="bento-desc">Beautiful, modern UI with smooth animations and eye-catching visuals.</p>
+      </div>
+
+      <div class="bento-card" data-cursor-hover>
+        <i class="ph ph-shield-check bento-icon" style="color: var(--neon-green);"></i>
+        <h3 class="bento-title">Secure & Fast</h3>
+        <p class="bento-desc">Built with security and performance in mind. Your data is safe, and games load instantly.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Gameplay Section -->
+  <section class="gameplay">
+    <div class="gameplay-content">
+      <div class="gameplay-text">
+        <h2 data-splitting>How It Works</h2>
+        <p>Join a room, invite your friends, and start playing. The classic UNO rules you know and love, with a modern twist. Match colors, play action cards, and be the first to empty your hand.</p>
+        <p>With real-time synchronization, you'll never miss a beat. Every card flip, every UNO call, every victory celebration happens instantly across all players.</p>
+      </div>
+      <div class="gameplay-visual">
+        <div class="card-stack">
+          <div class="stack-card red">
+            <div class="card-corner">7</div>
+            <div class="card-center">7</div>
+            <div class="card-corner-bottom">7</div>
+          </div>
+          <div class="stack-card blue">
+            <div class="card-corner">+4</div>
+            <div class="card-center">+4</div>
+            <div class="card-corner-bottom">+4</div>
+          </div>
+          <div class="stack-card red">
+            <div class="card-corner">R</div>
+            <div class="card-center">⇄</div>
+            <div class="card-corner-bottom">R</div>
+          </div>
+          <div class="stack-card blue">
+            <div class="card-corner">S</div>
+            <div class="card-center">⊘</div>
+            <div class="card-corner-bottom">S</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats Section -->
+  <section class="stats">
+    <h2 class="section-title" data-splitting>Numbers</h2>
+    <p class="section-subtitle">Join thousands of players worldwide</p>
+    
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-number" data-target="10000">0</div>
+        <div class="stat-label">Active Players</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" data-target="50000">0</div>
+        <div class="stat-label">Games Played</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" data-target="1000">0</div>
+        <div class="stat-label">Daily Matches</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" data-target="4.8">0</div>
+        <div class="stat-label">Average Rating</div>
       </div>
     </div>
   </section>
@@ -523,13 +1311,18 @@
   <!-- Marquee Section -->
   <section class="marquee-section">
     <div class="marquee">
-      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD •</span>
-      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD •</span>
+      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD • DRAW 2 •</span>
+      <span class="marquee-text">UNO REVERSE • SKIP • DRAW 4 • WILD CARD • DRAW 2 •</span>
     </div>
   </section>
 
   <!-- Footer -->
   <footer class="footer">
+    <div class="footer-links">
+      <a href="#" class="footer-link" id="support-link">Support</a>
+      <a href="#" class="footer-link" id="about-link">About</a>
+    </div>
+    
     <div class="developer-credit">
       <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Developed by</p>
       <div class="developer-info">
@@ -537,7 +1330,56 @@
         <span class="glitch-text">AIKS</span>
       </div>
     </div>
+    
+    <div class="copyright">
+      <p>&copy; 2024 ONO. All rights reserved.</p>
+    </div>
   </footer>
+
+  <!-- About Modal -->
+  <div class="modal-overlay" id="about-modal">
+    <div class="modal">
+      <button class="modal-close" id="about-close">&times;</button>
+      <h2 class="modal-title">About</h2>
+      <div class="about-content">
+        <img src="../assets/aiks.jpg" alt="AIKS" class="about-image">
+        <h3 class="about-name">AIKS</h3>
+        <div class="about-bio">
+          <p>Hello! I'm AIKS, a passionate developer and creator behind ONO - The Classic Game. Reimagined.</p>
+          <p>With a deep love for gaming and technology, I've dedicated myself to bringing the timeless fun of UNO into the digital age. My goal is to create experiences that connect people, regardless of where they are.</p>
+          <p>ONO represents my vision of combining classic gameplay with modern technology - real-time synchronization, cross-platform compatibility, and stunning visuals that make every game session memorable.</p>
+          <p>When I'm not coding, you'll find me exploring new technologies, playing games, or working on the next big feature that will make ONO even better.</p>
+          <p>Thank you for being part of this journey. Let's play UNO together!</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Support Modal -->
+  <div class="modal-overlay" id="support-modal">
+    <div class="modal">
+      <button class="modal-close" id="support-close">&times;</button>
+      <h2 class="modal-title">Support</h2>
+      <form class="support-form" id="support-form">
+        <div class="form-group">
+          <label class="form-label" for="name">Name</label>
+          <input type="text" id="name" class="form-input" name="name" required placeholder="Your name">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="email">Email</label>
+          <input type="email" id="email" class="form-input" name="email" required placeholder="your.email@example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="message">Message</label>
+          <textarea id="message" class="form-textarea" name="message" required placeholder="How can we help you?"></textarea>
+        </div>
+        <button type="submit" class="form-submit" id="support-submit">
+          <i class="ph ph-paper-plane-tilt"></i> Send Message
+        </button>
+        <div id="form-message" class="form-message" style="display: none;"></div>
+      </form>
+    </div>
+  </div>
 
   <script>
     // Initialize Splitting.js
@@ -576,25 +1418,27 @@
     
     updateCounter();
 
-    // Initialize Lenis Smooth Scroll
+    // Initialize Lenis Smooth Scroll - Much Less Sticky
     const lenis = new Lenis({
-      duration: 1.2,
+      duration: 0.5,
       easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
       orientation: 'vertical',
       gestureOrientation: 'vertical',
       smoothWheel: true,
-      wheelMultiplier: 1,
+      wheelMultiplier: 0.7,
       smoothTouch: false,
-      touchMultiplier: 2,
+      touchMultiplier: 1,
       infinite: false,
     });
 
-    function raf(time) {
-      lenis.raf(time);
-      requestAnimationFrame(raf);
-    }
+    // Connect Lenis to ScrollTrigger
+    lenis.on('scroll', ScrollTrigger.update);
 
-    requestAnimationFrame(raf);
+    gsap.ticker.add((time) => {
+      lenis.raf(time * 1000);
+    });
+
+    gsap.ticker.lagSmoothing(0);
 
     // Register ScrollTrigger
     gsap.registerPlugin(ScrollTrigger);
@@ -615,8 +1459,8 @@
     });
 
     const animateRing = () => {
-      ringX += (mouseX - ringX) * 0.1;
-      ringY += (mouseY - ringY) * 0.1;
+      ringX += (mouseX - ringX) * 0.15;
+      ringY += (mouseY - ringY) * 0.15;
       cursorRing.style.left = ringX + 'px';
       cursorRing.style.top = ringY + 'px';
       requestAnimationFrame(animateRing);
@@ -635,20 +1479,27 @@
     });
 
     // Floating Cards Parallax
-    const cards = document.querySelectorAll('.floating-card');
+    const cards = document.querySelectorAll('.uno-card');
     document.addEventListener('mousemove', (e) => {
       const mouseX = e.clientX / window.innerWidth;
       const mouseY = e.clientY / window.innerHeight;
       
       cards.forEach((card, index) => {
         const speed = (index + 1) * 0.5;
-        const x = (mouseX - 0.5) * speed * 50;
-        const y = (mouseY - 0.5) * speed * 50;
+        const x = (mouseX - 0.5) * speed * 40;
+        const y = (mouseY - 0.5) * speed * 40;
         const rotateX = (mouseY - 0.5) * speed * 10;
         const rotateY = (mouseX - 0.5) * speed * 10;
         
-        card.style.transform = `translate(${x}px, ${y}px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+        const baseTransform = card.getAttribute('data-base-transform') || '';
+        card.style.transform = `${baseTransform} translate(${x}px, ${y}px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
       });
+    });
+
+    // Store base transforms
+    cards.forEach(card => {
+      const computed = window.getComputedStyle(card);
+      card.setAttribute('data-base-transform', card.style.transform || '');
     });
 
     // Initialize Animations
@@ -657,48 +1508,410 @@
       const splitTexts = document.querySelectorAll('[data-splitting]');
       splitTexts.forEach(text => {
         const chars = text.querySelectorAll('.char');
-        gsap.from(chars, {
-          y: 100,
-          opacity: 0,
-          duration: 0.8,
-          stagger: 0.02,
-          ease: 'power3.out',
-          scrollTrigger: {
-            trigger: text,
-            start: 'top 80%',
-            toggleActions: 'play none none none'
-          }
-        });
-      });
-
-      // Bento cards animation
-      const bentoCards = document.querySelectorAll('.bento-card');
-      gsap.from(bentoCards, {
-        y: 100,
-        opacity: 0,
-        duration: 1,
-        stagger: 0.2,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: '.bento-grid',
-          start: 'top 80%',
-          toggleActions: 'play none none none'
+        if (chars.length > 0) {
+          gsap.from(chars, {
+            y: 100,
+            opacity: 0,
+            duration: 0.8,
+            stagger: 0.02,
+            ease: 'power3.out',
+            scrollTrigger: {
+              trigger: text,
+              start: 'top 85%',
+              toggleActions: 'play none none none',
+              markers: false
+            }
+          });
         }
       });
 
-      // Parallax scale effect for images
-      gsap.utils.toArray('.bento-card').forEach(card => {
-        gsap.to(card, {
-          scale: 1.05,
-          scrollTrigger: {
-            trigger: card,
-            start: 'top 80%',
-            end: 'bottom 20%',
-            scrub: true
-          }
+      // Bento cards animation - Ensure visibility
+      const bentoCards = document.querySelectorAll('.bento-card');
+      bentoCards.forEach(card => {
+        card.style.opacity = '1';
+        card.style.visibility = 'visible';
+      });
+      
+      gsap.from(bentoCards, {
+        y: 60,
+        opacity: 0.3,
+        duration: 0.6,
+        stagger: 0.08,
+        ease: 'power2.out',
+        scrollTrigger: {
+          trigger: '.bento-grid',
+          start: 'top 85%',
+          toggleActions: 'play none none none',
+          markers: false
+        }
+      });
+
+      // Stats counter animation
+      const statNumbers = document.querySelectorAll('.stat-number');
+      statNumbers.forEach(stat => {
+        const target = parseFloat(stat.getAttribute('data-target'));
+        const isDecimal = target % 1 !== 0;
+        
+        ScrollTrigger.create({
+          trigger: stat,
+          start: 'top 80%',
+          onEnter: () => {
+            let current = 0;
+            const duration = 2;
+            const steps = 60;
+            const increment = target / (duration * steps);
+            
+            const timer = setInterval(() => {
+              current += increment;
+              if (current >= target) {
+                stat.textContent = isDecimal ? target.toFixed(1) : Math.floor(target);
+                clearInterval(timer);
+              } else {
+                stat.textContent = isDecimal ? current.toFixed(1) : Math.floor(current);
+              }
+            }, 1000 / steps);
+          },
+          once: true
         });
       });
     }
+
+    // Hide cursor on mobile
+    if (window.innerWidth <= 768) {
+      document.querySelector('.cursor').style.display = 'none';
+      document.querySelector('.cursor-ring').style.display = 'none';
+      document.body.style.cursor = 'default';
+    }
+
+    // EmailJS Configuration
+    // IMPORTANT: Update these values in your EmailJS dashboard:
+    // 1. Go to https://dashboard.emailjs.com/admin/templates
+    // 2. Create a new template or use an existing one
+    // 3. Copy the Template ID (e.g., template_xxxxxxx)
+    // 4. Make sure your template has these EXACT variables:
+    //    - {{name}} (for sender's name)
+    //    - {{email}} (for sender's email)
+    //    - {{message}} (for message content)
+    // NOTE: The variable names MUST match the form field names exactly (case-sensitive)!
+    const EMAILJS_CONFIG = {
+      serviceId: 'service_akpb27f',
+      templateId: 'template_wtp3y0s', // CHANGE THIS to your actual template ID
+      publicKey: 'iXJn06KXgOFLrCjO0'
+    };
+
+    // Initialize EmailJS
+    try {
+      emailjs.init(EMAILJS_CONFIG.publicKey);
+      console.log('EmailJS initialized successfully');
+    } catch (error) {
+      console.error('EmailJS initialization error:', error);
+    }
+
+    // About Modal
+    const aboutLink = document.getElementById('about-link');
+    const aboutModal = document.getElementById('about-modal');
+    const aboutClose = document.getElementById('about-close');
+    const aboutModalContent = aboutModal.querySelector('.modal');
+
+    // Store scroll position for restoration
+    let savedScrollPosition = 0;
+
+    aboutLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      // Save current scroll position
+      savedScrollPosition = window.scrollY || window.pageYOffset;
+      // Stop Lenis smooth scroll
+      if (lenis) {
+        lenis.stop();
+      }
+      aboutModal.classList.add('active');
+      // Lock body scroll
+      document.body.style.position = 'fixed';
+      document.body.style.top = `-${savedScrollPosition}px`;
+      document.body.style.width = '100%';
+      document.body.style.overflow = 'hidden';
+      // Show cursor in modal
+      if (window.innerWidth > 768) {
+        document.querySelector('.cursor').style.display = 'block';
+        document.querySelector('.cursor-ring').style.display = 'block';
+      }
+    });
+
+    aboutClose.addEventListener('click', () => {
+      aboutModal.classList.remove('active');
+      // Restore body scroll properly
+      document.body.style.position = '';
+      document.body.style.top = '';
+      document.body.style.width = '';
+      document.body.style.overflow = '';
+      // Restore scroll position
+      window.scrollTo(0, savedScrollPosition);
+      // Restart Lenis smooth scroll
+      if (lenis) {
+        lenis.start();
+        lenis.scrollTo(savedScrollPosition, { immediate: true });
+      }
+      // Force reflow
+      void document.body.offsetHeight;
+      // Restore cursor
+      if (window.innerWidth > 768) {
+        document.querySelector('.cursor').style.display = 'block';
+        document.querySelector('.cursor-ring').style.display = 'block';
+      }
+    });
+
+    aboutModal.addEventListener('click', (e) => {
+      if (e.target === aboutModal) {
+        aboutModal.classList.remove('active');
+        // Restore body scroll properly
+        document.body.style.position = '';
+        document.body.style.top = '';
+        document.body.style.width = '';
+        document.body.style.overflow = '';
+        // Restore scroll position
+        window.scrollTo(0, savedScrollPosition);
+        // Restart Lenis smooth scroll
+        if (lenis) {
+          lenis.start();
+          lenis.scrollTo(savedScrollPosition, { immediate: true });
+        }
+        // Force reflow
+        void document.body.offsetHeight;
+        // Restore cursor
+        if (window.innerWidth > 768) {
+          document.querySelector('.cursor').style.display = 'block';
+          document.querySelector('.cursor-ring').style.display = 'block';
+        }
+      }
+    });
+
+    // Prevent body scroll when scrolling inside modal
+    if (aboutModalContent) {
+      aboutModalContent.addEventListener('wheel', (e) => {
+        e.stopPropagation(); // Always stop propagation to prevent body scroll
+        // Don't prevent default - let the modal scroll naturally
+      }, { passive: true });
+
+      aboutModalContent.addEventListener('touchmove', (e) => {
+        e.stopPropagation();
+      }, { passive: true });
+
+      // Prevent scroll on overlay background
+      aboutModal.addEventListener('wheel', (e) => {
+        if (e.target === aboutModal) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, { passive: false });
+    }
+
+    // Support Modal
+    const supportLink = document.getElementById('support-link');
+    const supportModal = document.getElementById('support-modal');
+    const supportClose = document.getElementById('support-close');
+    const supportForm = document.getElementById('support-form');
+    const formMessage = document.getElementById('form-message');
+    const supportSubmit = document.getElementById('support-submit');
+    const supportModalContent = supportModal.querySelector('.modal');
+
+    supportLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      // Save current scroll position
+      savedScrollPosition = window.scrollY || window.pageYOffset;
+      // Stop Lenis smooth scroll
+      if (lenis) {
+        lenis.stop();
+      }
+      supportModal.classList.add('active');
+      // Lock body scroll
+      document.body.style.position = 'fixed';
+      document.body.style.top = `-${savedScrollPosition}px`;
+      document.body.style.width = '100%';
+      document.body.style.overflow = 'hidden';
+      // Show cursor in modal
+      if (window.innerWidth > 768) {
+        document.querySelector('.cursor').style.display = 'block';
+        document.querySelector('.cursor-ring').style.display = 'block';
+      }
+    });
+
+    // Prevent body scroll when scrolling inside modal
+    if (supportModalContent) {
+      supportModalContent.addEventListener('wheel', (e) => {
+        const modal = e.currentTarget;
+        const isAtTop = modal.scrollTop === 0;
+        const isAtBottom = modal.scrollTop + modal.clientHeight >= modal.scrollHeight - 1;
+        
+        if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+          e.preventDefault();
+        }
+        e.stopPropagation();
+      }, { passive: false });
+
+      supportModalContent.addEventListener('touchmove', (e) => {
+        e.stopPropagation();
+      }, { passive: false });
+    }
+
+    supportClose.addEventListener('click', () => {
+      supportModal.classList.remove('active');
+      // Restore body scroll properly
+      document.body.style.position = '';
+      document.body.style.top = '';
+      document.body.style.width = '';
+      document.body.style.overflow = '';
+      // Restore scroll position
+      window.scrollTo(0, savedScrollPosition);
+      // Restart Lenis smooth scroll
+      if (lenis) {
+        lenis.start();
+        lenis.scrollTo(savedScrollPosition, { immediate: true });
+      }
+      // Force reflow
+      void document.body.offsetHeight;
+      supportForm.reset();
+      formMessage.style.display = 'none';
+      // Restore cursor
+      if (window.innerWidth > 768) {
+        document.querySelector('.cursor').style.display = 'block';
+        document.querySelector('.cursor-ring').style.display = 'block';
+      }
+    });
+
+    supportModal.addEventListener('click', (e) => {
+      if (e.target === supportModal) {
+        supportModal.classList.remove('active');
+        // Restore body scroll properly
+        document.body.style.position = '';
+        document.body.style.top = '';
+        document.body.style.width = '';
+        document.body.style.overflow = '';
+        // Restore scroll position
+        window.scrollTo(0, savedScrollPosition);
+        // Restart Lenis smooth scroll
+        if (lenis) {
+          lenis.start();
+          lenis.scrollTo(savedScrollPosition, { immediate: true });
+        }
+        // Force reflow
+        void document.body.offsetHeight;
+        supportForm.reset();
+        formMessage.style.display = 'none';
+        // Restore cursor
+        if (window.innerWidth > 768) {
+          document.querySelector('.cursor').style.display = 'block';
+          document.querySelector('.cursor-ring').style.display = 'block';
+        }
+      }
+    });
+
+    // Prevent body scroll when scrolling inside modal
+    if (supportModalContent) {
+      supportModalContent.addEventListener('wheel', (e) => {
+        const modal = e.currentTarget;
+        const isAtTop = modal.scrollTop === 0;
+        const isAtBottom = modal.scrollTop + modal.clientHeight >= modal.scrollHeight - 1;
+        
+        // Only prevent default if we're at the boundary and trying to scroll further
+        if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+          e.preventDefault();
+        }
+        e.stopPropagation();
+      }, { passive: false });
+
+      supportModalContent.addEventListener('touchmove', (e) => {
+        e.stopPropagation();
+      }, { passive: false });
+
+      // Prevent scroll on overlay
+      supportModal.addEventListener('wheel', (e) => {
+        if (e.target === supportModal) {
+          e.preventDefault();
+        }
+      }, { passive: false });
+    }
+
+    // Support Form Submission
+    supportForm.addEventListener('submit', function(event) {
+      event.preventDefault();
+      
+      // Update button state
+      const originalButtonHTML = supportSubmit.innerHTML;
+      supportSubmit.disabled = true;
+      supportSubmit.innerHTML = '<i class="ph ph-spinner"></i> Sending...';
+      formMessage.style.display = 'none';
+
+      // Use emailjs.sendForm() - automatically maps form fields to template variables
+      emailjs.sendForm(
+        EMAILJS_CONFIG.serviceId,
+        EMAILJS_CONFIG.templateId,
+        this
+      )
+      .then(() => {
+        // Success
+        supportSubmit.innerHTML = originalButtonHTML;
+        supportSubmit.disabled = false;
+        
+        formMessage.textContent = 'Thank you! Your message has been sent successfully. We\'ll get back to you soon.';
+        formMessage.className = 'form-message success';
+        formMessage.style.display = 'block';
+        supportForm.reset();
+
+        setTimeout(() => {
+          formMessage.style.display = 'none';
+          supportModal.classList.remove('active');
+          // Restore body scroll properly
+          document.body.style.position = '';
+          document.body.style.top = '';
+          document.body.style.width = '';
+          document.body.style.overflow = '';
+          // Restore scroll position
+          window.scrollTo(0, savedScrollPosition);
+          // Restart Lenis smooth scroll
+          if (lenis) {
+            lenis.start();
+            lenis.scrollTo(savedScrollPosition, { immediate: true });
+          }
+          // Force reflow
+          void document.body.offsetHeight;
+          // Restore cursor
+          if (window.innerWidth > 768) {
+            document.querySelector('.cursor').style.display = 'block';
+            document.querySelector('.cursor-ring').style.display = 'block';
+          }
+        }, 3000);
+      }, (err) => {
+        // Error
+        console.error('EmailJS Error:', err);
+        supportSubmit.innerHTML = originalButtonHTML;
+        supportSubmit.disabled = false;
+        
+        let errorMessage = 'Sorry, there was an error sending your message.\n\n';
+        
+        if (err.text && err.text.includes('template ID not found')) {
+          errorMessage += '❌ Template ID not found!\n\n';
+          errorMessage += '📋 To fix this:\n';
+          errorMessage += '1. Go to: https://dashboard.emailjs.com/admin/templates\n';
+          errorMessage += '2. Create a new template or copy an existing template ID\n';
+          errorMessage += '3. Update the templateId in the code (currently: ' + EMAILJS_CONFIG.templateId + ')\n';
+          errorMessage += '4. Make sure your template has these variables:\n';
+          errorMessage += '   - {{name}}\n';
+          errorMessage += '   - {{email}}\n';
+          errorMessage += '   - {{message}}';
+        } else if (err.text && err.text.includes('service')) {
+          errorMessage += '❌ Service ID not found!\n\n';
+          errorMessage += '📋 Check your Service ID: ' + EMAILJS_CONFIG.serviceId;
+        } else if (err.text) {
+          errorMessage += err.text;
+        } else {
+          errorMessage += 'Please check your EmailJS configuration.';
+        }
+        
+        formMessage.textContent = errorMessage;
+        formMessage.className = 'form-message error';
+        formMessage.style.display = 'block';
+      });
+    });
   </script>
 </body>
 </html>
