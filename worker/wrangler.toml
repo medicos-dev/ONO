@@ -1,0 +1,22 @@
+name = "ono-worker"
+main = "src/index.ts"
+compatibility_date = "2024-10-30"
+
+[triggers]
+crons = ["*/20 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ono-aiks-db"
+database_id = "e37921f3-f9f1-4208-a357-d492a9c9c377"
+
+[env.production]
+name = "ono-worker-production"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "ono-aiks-db"
+database_id = "e37921f3-f9f1-4208-a357-d492a9c9c377"
+
+[env.production.vars]
+ENVIRONMENT = "production"
