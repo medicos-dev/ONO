@@ -3,8 +3,10 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:isar/isar.dart';
 import '../models/room.dart';
 import '../models/player.dart';
+import '../models/isar_models.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
 import '../services/isar_service.dart';
