@@ -73,6 +73,11 @@ export default {
         return handlePoll(code, url.searchParams, env);
       } else if (path === '/heartbeat' && method === 'POST') {
         return handleHeartbeat(request, env);
+      } else if (path === '/rtc/signal' && method === 'POST') {
+        return handleSendRTCSignal(request, env);
+      } else if (path.startsWith('/rtc/signals/') && method === 'GET') {
+        const playerId = path.split('/')[3];
+        return handleGetRTCSignals(playerId, env);
       } else {
         return new Response('Not Found', { status: 404 });
       }
@@ -110,7 +115,7 @@ async function handleCreateRoom(request: Request, env: Env): Promise<Response> {
   }
 
   const roomCode = requestedRoomCode.trim().toUpperCase();
-  
+
   // Validate room code format (alphanumeric, 3-10 characters)
   if (!/^[A-Z0-9]{3,10}$/.test(roomCode)) {
     return new Response(JSON.stringify({ error: 'Room code must be 3-10 alphanumeric characters' }), {
@@ -118,12 +123,12 @@ async function handleCreateRoom(request: Request, env: Env): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  
+
   // Check if room already exists
   const existingRoom = await env.DB.prepare('SELECT * FROM rooms WHERE code = ?')
     .bind(roomCode)
     .first();
-  
+
   if (existingRoom) {
     return new Response(JSON.stringify({ error: 'Room code already exists. Please choose a different code.' }), {
       status: 400,
@@ -267,7 +272,7 @@ async function handleJoinRoom(request: Request, env: Env): Promise<Response> {
         const raceCheck = await env.DB.prepare('SELECT id FROM players WHERE id = ? AND room_code = ?')
           .bind(playerId, code)
           .first<{ id: string }>();
-        
+
         if (!raceCheck) {
           // Real error, re-throw with context
           throw new Error(`Failed to insert player: ${insertError.message}`);
@@ -454,8 +459,8 @@ async function handleResignHost(request: Request, env: Env): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  updatedRoom.events = [createEvent(GameEventType.HOST_CHANGED, randomPlayer.id, { 
-    oldHostId: playerId, 
+  updatedRoom.events = [createEvent(GameEventType.HOST_CHANGED, randomPlayer.id, {
+    oldHostId: playerId,
     newHostId: randomPlayer.id,
     newHostName: randomPlayer.name,
   })];
@@ -516,7 +521,7 @@ async function handleStartGame(request: Request, env: Env): Promise<Response> {
 
   const hostPlayer = activePlayers[0];
   const hostHand = hands[0];
-  
+
   if (hostHand.length === 0) {
     return new Response(JSON.stringify({ error: 'Host has no cards' }), {
       status: 500,
@@ -554,7 +559,7 @@ async function handleStartGame(request: Request, env: Env): Promise<Response> {
   };
 
   const playerIdsOrdered = await getPlayerIds(roomCode.toUpperCase(), env);
-  
+
   const chosenColor = firstCard.isWild ? CardColor.red : undefined;
   const gameState = processCardPlay(
     initialGameState,
@@ -979,15 +984,15 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
 
   const room = await getRoomWithPlayers(roomCode.toUpperCase(), env);
 
-   if (!room) {
-     return new Response(JSON.stringify({
-       type: 'ROOM_DELETED',
-       reason: 'NOT_FOUND',
-       events: [createEvent(GameEventType.ROOM_DELETED, playerId, { reason: 'NOT_FOUND' })],
-     }), {
-       headers: { 'Content-Type': 'application/json' },
-     });
-   }
+  if (!room) {
+    return new Response(JSON.stringify({
+      type: 'ROOM_DELETED',
+      reason: 'NOT_FOUND',
+      events: [createEvent(GameEventType.ROOM_DELETED, playerId, { reason: 'NOT_FOUND' })],
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   if (room.gameState && room.gameState.stateVersion <= stateVersion) {
     return new Response(null, { status: 204 });
@@ -1036,14 +1041,14 @@ async function handlePoll(code: string, searchParams: URLSearchParams, env: Env)
     if (currentVersion <= lastKnownVersion && roomStateVersion.state_version <= lastKnownVersion) {
       const maxWait = isSpectator ? 5 : 15;
       const checkInterval = isSpectator ? 2000 : 1000;
-      
+
       for (let i = 0; i < maxWait; i++) {
         await new Promise(resolve => setTimeout(resolve, checkInterval));
         try {
           const roomData = await env.DB.prepare('SELECT state_version FROM rooms WHERE code = ?')
             .bind(code.toUpperCase())
             .first<{ state_version: number }>();
-          
+
           if (!roomData) {
             console.log('[poll.exit]', JSON.stringify({ roomCode: code.toUpperCase(), reason: 'ROOM_DELETED_NOT_FOUND' }));
             return new Response(JSON.stringify({
@@ -1054,7 +1059,7 @@ async function handlePoll(code: string, searchParams: URLSearchParams, env: Env)
               headers: { 'Content-Type': 'application/json' },
             });
           }
-          
+
           if (roomData.state_version > lastKnownVersion) {
             const updatedRoom = await getRoomWithPlayers(code.toUpperCase(), env);
             if (updatedRoom) {
@@ -1075,7 +1080,7 @@ async function handlePoll(code: string, searchParams: URLSearchParams, env: Env)
           });
         }
       }
-      
+
       console.log('[poll.exit]', JSON.stringify({ roomCode: code.toUpperCase(), changed: false, reason: 'TIMEOUT' }));
       return new Response(JSON.stringify({ changed: false }), {
         status: 304,
@@ -1233,4 +1238,76 @@ function createEvent(type: GameEventType, playerId?: string, data?: any): GameEv
     timestamp: new Date().toISOString(),
     eventId: `${type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
   };
+}
+async function handleGetRTCSignals(playerId: string, env: Env): Promise<Response> {
+  if (!playerId) {
+    return new Response(JSON.stringify({ error: 'Missing playerId' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const signals = await env.DB.prepare(
+    'SELECT * FROM rtc_signals WHERE to_player_id = ? ORDER BY created_at ASC'
+  )
+    .bind(playerId)
+    .all<{
+      id: number;
+      room_code: string;
+      from_player_id: string;
+      to_player_id: string;
+      signal_type: string;
+      signal_data: string;
+      created_at: string;
+    }>();
+
+  if (signals.results.length > 0) {
+    const ids = signals.results.map(s => s.id);
+    const placeholders = ids.map(() => '?').join(',');
+    await env.DB.prepare(`DELETE FROM rtc_signals WHERE id IN (${placeholders})`)
+      .bind(...ids)
+      .run();
+  }
+
+  return new Response(JSON.stringify({ signals: signals.results }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function handleSendRTCSignal(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      roomCode: string;
+      fromPlayerId: string;
+      toPlayerId: string;
+      signalType: string;
+      signalData: string;
+    };
+
+    const { roomCode, fromPlayerId, toPlayerId, signalType, signalData } = body;
+
+    if (!roomCode || !fromPlayerId || !toPlayerId || !signalType || !signalData) {
+      return new Response(JSON.stringify({ error: 'Missing required fields' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    await env.DB.prepare(
+      `INSERT INTO rtc_signals (room_code, from_player_id, to_player_id, signal_type, signal_data)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+      .bind(roomCode.toUpperCase(), fromPlayerId, toPlayerId, signalType, signalData)
+      .run();
+
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    console.error('[rtc.signal.error]', error);
+    return new Response(JSON.stringify({ error: 'INTERNAL_ERROR' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 }
